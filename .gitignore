@@ -1,0 +1,28 @@
+# Environment
+.env
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Data & model artifacts (too large for git — use shared drive or re-generate)
+data/store/
+data/features/
+models/trained/
+logs/
+signals/
+
+# Keep these dirs tracked but empty
+!data/store/.gitkeep
+!data/features/.gitkeep
+!models/trained/.gitkeep
+!logs/.gitkeep
+!signals/.gitkeep
+
+# Notebooks — keep .ipynb but ignore checkpoints
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db

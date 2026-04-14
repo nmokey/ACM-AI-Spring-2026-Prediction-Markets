@@ -1,0 +1,39 @@
+# ─────────────────────────────────────────────
+#  Prediction Markets Bot — Central Config
+#  Edit this file to tune strategy parameters.
+#  DO NOT hardcode these values elsewhere.
+# ─────────────────────────────────────────────
+
+trading:
+  mode: "dry_run"          # "dry_run" | "live"  — flip to "live" only after Week 6 go/no-go
+  min_edge: 0.06           # minimum |p_model - market_price| to place a trade
+  kelly_fraction: 0.25     # fractional Kelly multiplier (never use full Kelly)
+  max_position_pct: 0.05   # max % of account on a single contract  →  $5 on $100 account
+  max_total_exposure_pct: 0.40  # pause new trades if open positions exceed 40% of account
+  min_confidence: 0.60     # skip predictions below this confidence threshold
+
+markets:
+  categories:
+    - "weather"
+    - "crypto"
+    - "sports"
+  target_cities:           # for NOAA weather markets
+    - "New York"
+    - "Los Angeles"
+    - "Chicago"
+  crypto_pairs:            # for Binance price ingestion
+    - "BTCUSDT"
+    - "ETHUSDT"
+
+pipeline:
+  feature_refresh_interval_min: 15   # how often Team 1 refreshes live_features.parquet
+  sentiment_refresh_interval_min: 30 # how often Team 3 NLP refreshes sentiment.json
+  poll_interval_sec: 60              # trader.py main loop interval
+
+data:
+  features_path: "data/features/live_features.parquet"
+  headlines_db_path: "data/store/headlines.db"
+  sentiment_path: "signals/sentiment.json"
+  predictions_path: "signals/predictions.json"
+  trades_log_path: "logs/trades.csv"
+  dry_run_log_path: "logs/dry_run_trades.csv"
