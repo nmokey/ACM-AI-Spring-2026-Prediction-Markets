@@ -1,12 +1,13 @@
 """
 nlp/sentiment.py
 ──────────────────
-Sentiment scoring pipeline — Team 3 NLP's main deliverable.
+Sentiment scoring pipeline — Team 2 (Modeling & Intelligence) NLP deliverable.
 
 Takes relevant headlines (from nlp/relevance.py) and produces a
-per-contract SentimentSignal, written to signals/sentiment.json.
+per-contract SentimentSignal. This is an internal Team 2 artifact —
+sentiment flows directly into models/predict.py and is NOT a cross-team contract.
 
-Team 3 (NLP half) — implement all functions marked with TODO.
+Team 2 — Modeling & Intelligence (NLP half) — implement all functions marked with TODO.
 
 Models to try:
     VADER (rule-based, zero setup):
@@ -100,7 +101,7 @@ def build_sentiment_signals(
 
 def save_sentiment_signals(signals: dict[str, SentimentSignal]) -> None:
     """
-    Serialize signals dict to signals/sentiment.json.
+    Serialize signals dict to nlp/sentiment.json (internal Team 2 cache).
 
     TODO (Week 3):
         - Call sig.model_dump(mode="json") on each signal

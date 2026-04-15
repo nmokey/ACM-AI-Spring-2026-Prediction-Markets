@@ -7,7 +7,7 @@ Reads the latest predictions (from Team 2) and live market prices
 (from Team 1), applies risk filters, sizes positions with Kelly,
 and submits or logs orders.
 
-Team 3 (Execution half) — implement run_once() and main().
+Team 3 — Execution — implement run_once() and main().
 
 Run via: python -m execution.trader  or  bash scripts/run_bot.sh
 """

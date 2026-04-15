@@ -4,8 +4,8 @@ models/train.py
 XGBoost model training script — Team 2's main Week 4 deliverable.
 
 Reads:
-    data/features/live_features.parquet   (historical features from Team 1)
-    signals/sentiment.json                (sentiment signals from Team 3 NLP)
+    data/features/live_features.parquet   (from Team 1 via data contract)
+    nlp/sentiment.json                    (internal Team 2 sentiment cache — run nlp/sentiment.py first)
 
 Trains an XGBoost classifier to predict whether a contract resolves YES,
 calibrates it with isotonic regression, and saves the model.
