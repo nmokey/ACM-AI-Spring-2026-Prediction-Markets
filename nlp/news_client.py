@@ -3,7 +3,7 @@ nlp/news_client.py
 ────────────────────
 GNews API client — fetches headlines and stores them in SQLite.
 
-Team 3 (NLP half) — implement all methods marked with TODO.
+Team 2 — Modeling & Intelligence (NLP half) — implement all methods marked with TODO.
 
 GNews docs:    https://gnews.io/docs/v4
 Academic access: email support@gnews.io from your UCLA address for a free key.

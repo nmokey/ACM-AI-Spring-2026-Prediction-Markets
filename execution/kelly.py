@@ -9,7 +9,7 @@ bankroll should we bet to maximize long-run growth?
 Full Kelly is too aggressive for real trading (too sensitive to model errors).
 We use Fractional Kelly: f* × kelly_fraction (default 0.25 = "quarter Kelly").
 
-Team 3 Execution owns this file.
+Team 3 — Execution owns this file.
 
 Reference: https://en.wikipedia.org/wiki/Kelly_criterion
 """

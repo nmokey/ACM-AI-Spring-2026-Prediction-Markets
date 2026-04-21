@@ -5,7 +5,7 @@ Live inference — loads the trained model and writes predictions for all
 active contracts to signals/predictions.json.
 
 Reads:   data/features/live_features.parquet
-         signals/sentiment.json
+         nlp/sentiment.json   (internal Team 2 cache — produced by nlp/sentiment.py)
 Writes:  signals/predictions.json
 
 Team 2 owns this file.
@@ -64,7 +64,7 @@ def predict() -> dict[str, PredictionSignal]:
         1. Load model with load_model()
         2. Read live_features.parquet — filter OUT rows with a resolved_yes label
            (we only want to predict on contracts still open)
-        3. Join sentiment_score and sentiment_confidence from sentiment.json (default 0.0)
+        3. Join sentiment_score and sentiment_confidence from nlp/sentiment.json — internal Team 2 cache (default 0.0)
         4. Fill NaNs in FEATURE_COLS with 0.0
         5. Call model.predict_proba(X)[:, 1] to get P(YES) for each row
         6. Compute confidence as a proxy for certainty:

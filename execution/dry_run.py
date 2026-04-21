@@ -6,7 +6,7 @@ Dry-run trade logger.
 In dry_run mode, orders are never submitted to Kalshi — they are
 written to logs/dry_run_trades.csv for analysis and backtesting.
 
-Team 3 Execution owns this file.
+Team 3 — Execution owns this file.
 """
 
 from __future__ import annotations

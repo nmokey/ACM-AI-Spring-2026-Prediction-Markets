@@ -6,7 +6,7 @@ Risk management filters.
 All trade candidates must pass through these checks before being sized
 or submitted. If any check fails, the trade is skipped and logged.
 
-Team 3 Execution owns this file.
+Team 3 — Execution owns this file.
 """
 
 from __future__ import annotations

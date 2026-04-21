@@ -7,7 +7,7 @@ Given a Kalshi contract title and a list of headlines, return the headlines
 most semantically related to that contract using cosine similarity between
 sentence embeddings.
 
-Team 3 (NLP half) — implement score_relevance().
+Team 2 — Modeling & Intelligence (NLP half) — implement score_relevance().
 
 Model: sentence-transformers/all-MiniLM-L6-v2
 Docs:  https://www.sbert.net/docs/pretrained_models.html

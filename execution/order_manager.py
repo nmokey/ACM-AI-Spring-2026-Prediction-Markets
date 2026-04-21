@@ -6,7 +6,7 @@ Kalshi order management — the only file allowed to submit real orders.
 All order placement MUST go through this module. It enforces dry_run mode
 so members can't accidentally spend real money while testing.
 
-Team 3 (Execution half) — implement all methods marked with TODO.
+Team 3 — Execution — implement all methods marked with TODO.
 """
 
 from __future__ import annotations

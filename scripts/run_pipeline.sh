@@ -2,7 +2,7 @@
 # scripts/run_pipeline.sh
 # ─────────────────────────
 # Data + NLP pipeline loop — runs on the club server overnight.
-# Refreshes live_features.parquet and sentiment.json on schedule.
+# Refreshes live_features.parquet (Team 1) and NLP sentiment cache (Team 2) on schedule.
 #
 # Usage: bash scripts/run_pipeline.sh
 # Run in background: nohup bash scripts/run_pipeline.sh > logs/pipeline.log 2>&1 &

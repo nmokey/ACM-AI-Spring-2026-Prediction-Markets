@@ -27,13 +27,13 @@ markets:
 
 pipeline:
   feature_refresh_interval_min: 15   # how often Team 1 refreshes live_features.parquet
-  sentiment_refresh_interval_min: 30 # how often Team 3 NLP refreshes sentiment.json
+  sentiment_refresh_interval_min: 30 # how often Team 2 (Modeling & Intelligence) refreshes sentiment cache
   poll_interval_sec: 60              # trader.py main loop interval
 
 data:
   features_path: "data/features/live_features.parquet"
   headlines_db_path: "data/store/headlines.db"
-  sentiment_path: "signals/sentiment.json"
+  sentiment_path: "nlp/sentiment.json"
   predictions_path: "signals/predictions.json"
   trades_log_path: "logs/trades.csv"
   dry_run_log_path: "logs/dry_run_trades.csv"
