@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +46,22 @@ def init_db() -> sqlite3.Connection:
 
     TODO (Week 2): write the CREATE TABLE IF NOT EXISTS statement and return conn.
     """
-    raise NotImplementedError
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS headlines (
+            id        TEXT PRIMARY KEY,
+            text      TEXT NOT NULL,
+            source    TEXT,
+            url       TEXT,
+            timestamp TEXT,
+            query     TEXT
+        )
+        """
+    )
+    conn.commit()
+    return conn
 
 
 class NewsClient:
@@ -65,16 +81,35 @@ class NewsClient:
 
         Returns:
             List of dicts with keys: id, text, source, url, timestamp, query
-
-        TODO (Week 2):
-            - If self.api_key is empty, call self._fetch_gdelt(query, max_results) instead
-            - Otherwise, GET https://gnews.io/api/v4/search with params:
-                q, lang="en", max=max_results, apikey, sortby="publishedAt"
-            - Parse each article from resp.json()["articles"] into the dict format above
-            - Give each headline a unique id (hint: import uuid; str(uuid.uuid4()))
-            - Concatenate title + ". " + description for the "text" field
         """
-        raise NotImplementedError
+        if not self.api_key:
+            return self._fetch_gdelt(query, max_results)
+
+        params = {
+            "q":       query,
+            "lang":    "en",
+            "max":     max_results,
+            "apikey":  self.api_key,
+            "sortby":  "publishedAt",
+        }
+
+        resp = self.session.get(f"{GNEWS_BASE}/search", params=params, timeout=10)
+        resp.raise_for_status()
+
+        headlines = []
+        for a in resp.json().get("articles", []):
+            title = a.get("title", "")
+            desc  = a.get("description", "") or ""
+            headlines.append({
+                "id":        str(uuid.uuid4()),
+                "text":      f"{title}. {desc}".strip(". "),
+                "source":    a.get("source", {}).get("name", ""),
+                "url":       a.get("url", ""),
+                "timestamp": a.get("publishedAt", ""),
+                "query":     query,
+            })
+
+        return headlines
 
     def _fetch_gdelt(self, query: str, max_results: int) -> list[dict[str, Any]]:
         """
@@ -86,8 +121,41 @@ class NewsClient:
         TODO (Week 2): implement as a backup when GNews is unavailable.
         Parse resp.json()["articles"] — each has: title, domain, url, seendate.
         """
-        raise NotImplementedError
 
+        url = 'https://api.gdeltproject.org/api/v2/doc/doc'
+
+        params = {
+            "query": query,
+            "mode": "artlist",
+            "maxrecords": max_results,
+            "format": "json",
+            "timespan": "1d",
+        }
+        try:
+            resp = requests.get(url, params=params, timeout=10)
+            resp.raise_for_status()
+            articles = resp.json().get("articles", [])
+        except Exception as e:
+            print(f"[GDELT] Request failed: {e}")
+            return []
+
+        results = []
+        for i, article in enumerate(articles):
+            title = article.get("title", "").strip()
+            if not title:
+                continue
+            results.append({
+                "id":        f"gdelt-{i}-{hash(article.get('url', ''))}",
+                "text":      title,
+                "source":    article.get("domain", "gdelt"),
+                "url":       article.get("url", ""),
+                "timestamp": article.get("seendate", ""),
+                "query":     query,
+            })
+
+        return results
+
+    
     def store_headlines(self, headlines: list[dict[str, Any]]) -> int:
         """
         Insert headlines into the SQLite store.
@@ -107,7 +175,15 @@ class NewsClient:
         TODO (Week 2): write the SELECT query and return a list of dicts.
         Hint: cursor.description gives you the column names.
         """
-        raise NotImplementedError
+        cursor = self.conn.cursor()
+        if since_iso:
+            cursor.execute("SELECT * FROM headlines WHERE timestamp > ?", (since_iso,))
+        else:
+            cursor.execute("SELECT * FROM headlines")
+        
+        cols = [col[0] for col in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+        
 
     def poll_for_contracts(
         self,

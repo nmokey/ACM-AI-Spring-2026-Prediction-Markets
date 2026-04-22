@@ -12,6 +12,7 @@ data/features/
 models/trained/
 logs/
 signals/
+graphify-out/
 
 # Keep these dirs tracked but empty
 !data/store/.gitkeep

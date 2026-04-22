@@ -33,3 +33,4 @@ packages = ["backtest", "data", "execution", "models", "nlp"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
