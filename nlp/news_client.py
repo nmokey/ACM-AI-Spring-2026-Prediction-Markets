@@ -261,7 +261,7 @@ if __name__ == "__main__":
     # call to GNews searching for "bitcoin" and print 3 headline titles.
     # Push your notebook to notebooks/week1_team3_nlp.ipynb.
     raw = requests.get(
-        "{GNEWS_BASE}/search",
+        f"{GNEWS_BASE}/search",
         params={"q": "bitcoin", "lang": "en", "max": 3, "apikey": GNEWS_API_KEY},
         timeout=10,
     )
