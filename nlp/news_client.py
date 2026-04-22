@@ -45,7 +45,22 @@ def init_db() -> sqlite3.Connection:
 
     TODO (Week 2): write the CREATE TABLE IF NOT EXISTS statement and return conn.
     """
-    raise NotImplementedError
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS headlines (
+            id        TEXT PRIMARY KEY,
+            text      TEXT NOT NULL,
+            source    TEXT,
+            url       TEXT,
+            timestamp TEXT,
+            query     TEXT
+        )
+        """
+    )
+    conn.commit()
+    return conn
 
 
 class NewsClient:
