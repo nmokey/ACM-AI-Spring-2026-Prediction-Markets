@@ -6,8 +6,8 @@ Kalshi REST API client.
 Team 1 — implement all methods marked with TODO.
 
 Docs:    https://trading-api.kalshi.com/docs
-Auth:    KALSHI_API_KEY + KALSHI_API_SECRET in your .env file
-Base URL: https://trading-api.kalshi.com/trade-api/v2
+Auth:    KALSHI_API_KEY in your .env file (Bearer token)
+Base URL: https://api.elections.kalshi.com/trade-api/v2
 """
 
 from __future__ import annotations
@@ -20,18 +20,18 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BASE_URL = os.getenv("KALSHI_BASE_URL", "https://trading-api.kalshi.com/trade-api/v2")
+BASE_URL = os.getenv("KALSHI_BASE_URL", "https://api.elections.kalshi.com/trade-api/v2")
 
 
 class KalshiClient:
 
     def __init__(self) -> None:
         self.api_key = os.getenv("KALSHI_API_KEY", "")
-        self.api_secret = os.getenv("KALSHI_API_SECRET", "")
         self.session = requests.Session()
-        self.session.headers.update({"Content-Type": "application/json"})
-        # TODO (Week 1): add your API key to the session headers.
-        # Read the Kalshi auth docs to understand the required header format.
+        self.session.headers.update({
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        })
 
     # ── Market discovery ─────────────────────────────────────────────────────
 
@@ -57,16 +57,10 @@ class KalshiClient:
             - Return the "markets" key from the response
             - Check the Kalshi docs for the exact query parameter names
         """
-        parameters { 
-            "status" = status
-            "limit" = limit
-        }
-
-        if category:
-            params["catergory"] = category
-
-        response = self._get("/markets", parameters = parameters)
-        return response.get("markets", [])
+        params: dict[str, Any] = {"status": status, "limit": limit}
+        if category is not None:
+            params["category"] = category
+        return self._get("/markets", params=params)["markets"]
 
     def get_market(self, ticker: str) -> dict[str, Any]:
         """
@@ -74,16 +68,16 @@ class KalshiClient:
 
         TODO (Week 2): call self._get with the correct endpoint path.
         """
-        
-        raise NotImplementedError
+        return self._get(f"/markets/{ticker}")["market"]
 
     def get_orderbook(self, ticker: str) -> dict[str, Any]:
         """
         Fetch the current order book for a market.
 
-        TODO (Week 2): call self._get with the correct endpoint path.
+        Returns orderbook_fp dict with yes_dollars and no_dollars price levels:
+            {"yes_dollars": [["0.55", "100.00"], ...], "no_dollars": [...]}
         """
-        raise NotImplementedError
+        return self._get(f"/markets/{ticker}/orderbook")["orderbook_fp"]
 
     # ── Historical data (for Team 2 training) ────────────────────────────────
 
@@ -157,17 +151,18 @@ class KalshiClient:
             - Call raise_for_status() to catch HTTP errors
             - Return resp.json()
         """
-        raise NotImplementedError
+        resp = self.session.get(BASE_URL + path, params=params)
+        resp.raise_for_status()
+        return resp.json()
 
     def _post(self, path: str, json: dict | None = None) -> dict[str, Any]:
         """Make a POST request to BASE_URL + path. TODO (Week 5): same pattern as _get."""
         raise NotImplementedError
 
 
-# ── Week 1 hello world ────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # TODO (Week 1): without using the class above, write a raw requests.get()
-    # call to the Kalshi /markets endpoint and print the titles of 5 open contracts.
-    # Goal: just prove you can hit the API and read the response.
-    # Then copy your working code into notebooks/week1_team1.ipynb and push it.
-    print("Hello from Kalshi! Implement me.")
+    client = KalshiClient()
+    markets = client.get_markets(limit=5)
+    print(f"Fetched {len(markets)} markets:")
+    for m in markets:
+        print(f"  {m.get('ticker')} — {m.get('title')}")
