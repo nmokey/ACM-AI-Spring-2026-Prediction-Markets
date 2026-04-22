@@ -59,7 +59,13 @@ class WeatherClient:
             - Make a GET request with self.session
             - Return resp.json()["properties"]["periods"]
         """
-        raise NotImplementedError
+        if city not in CITY_GRIDPOINTS:
+            raise ValueError(f"Unknown city: {city!r}. Available: {list(CITY_GRIDPOINTS)}")
+        gp = CITY_GRIDPOINTS[city]
+        url = f"{BASE_URL}/gridpoints/{gp['office']}/{gp['gridX']},{gp['gridY']}/forecast/hourly"
+        resp = self.session.get(url)
+        resp.raise_for_status()
+        return resp.json()["properties"]["periods"]
 
     def get_todays_precip_prob(self, city: str) -> float | None:
         """
@@ -72,7 +78,16 @@ class WeatherClient:
             - Extract probabilityOfPrecipitation["value"] from each period
             - Return the max, or None if all values are None
         """
-        raise NotImplementedError
+        from datetime import date
+        today = date.today().isoformat()
+        periods = self.get_forecast(city)
+        values = [
+            p["probabilityOfPrecipitation"]["value"]
+            for p in periods
+            if p.get("startTime", "").startswith(today)
+            and p.get("probabilityOfPrecipitation", {}).get("value") is not None
+        ]
+        return max(values) if values else None
 
 
 # ── Week 1 hello world ────────────────────────────────────────────────────────
@@ -80,4 +95,24 @@ if __name__ == "__main__":
     # TODO (Week 1): make a raw requests.get() call to the NOAA hourly forecast
     # endpoint for one of the cities in CITY_GRIDPOINTS and print today's
     # precipitation probability. Push your notebook to notebooks/week1_team1.ipynb.
-    print("Hello from NOAA! Implement me.")
+    from datetime import date
+
+    city = "Los Angeles"
+    gp = CITY_GRIDPOINTS[city]
+    url = f"{BASE_URL}/gridpoints/{gp['office']}/{gp['gridX']},{gp['gridY']}/forecast/hourly"
+
+    resp = requests.get(url, headers=HEADERS)
+    resp.raise_for_status()
+    periods = resp.json()["properties"]["periods"]
+
+    today = date.today().isoformat()
+    today_periods = [p for p in periods if p.get("startTime", "").startswith(today)]
+
+    probs = [
+        p["probabilityOfPrecipitation"]["value"]
+        for p in today_periods
+        if p.get("probabilityOfPrecipitation", {}).get("value") is not None
+    ]
+
+    max_prob = max(probs) if probs else None
+    print(f"Today's max precipitation probability for {city}: {max_prob}%")
