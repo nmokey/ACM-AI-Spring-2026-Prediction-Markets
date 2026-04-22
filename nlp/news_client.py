@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sqlite3
 import uuid
 from pathlib import Path
@@ -121,7 +122,6 @@ class NewsClient:
         TODO (Week 2): implement as a backup when GNews is unavailable.
         Parse resp.json()["articles"] — each has: title, domain, url, seendate.
         """
-
         url = 'https://api.gdeltproject.org/api/v2/doc/doc'
 
         params = {
@@ -164,7 +164,21 @@ class NewsClient:
         TODO (Week 2): iterate over headlines and insert each one.
         Don't forget to call self.conn.commit() after all inserts.
         """
-        raise NotImplementedError
+        if not headlines:
+            return 0
+        rows = [
+            (h["id"], h["text"], h.get("source"), h.get("url"),
+             h.get("timestamp"), h.get("query"))
+            for h in headlines
+        ]
+        before = self.conn.total_changes
+        self.conn.executemany(
+            "INSERT OR IGNORE INTO headlines (id, text, source, url, timestamp, query) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        self.conn.commit()
+        return self.conn.total_changes - before
 
     def get_recent_headlines(self, since_iso: str | None = None) -> list[dict[str, Any]]:
         """
@@ -180,10 +194,9 @@ class NewsClient:
             cursor.execute("SELECT * FROM headlines WHERE timestamp > ?", (since_iso,))
         else:
             cursor.execute("SELECT * FROM headlines")
-        
+
         cols = [col[0] for col in cursor.description]
         return [dict(zip(cols, row)) for row in cursor.fetchall()]
-        
 
     def poll_for_contracts(
         self,
@@ -213,21 +226,43 @@ def _extract_query(contract_title: str) -> str:
     TODO (Week 2): write simple keyword heuristics for crypto, weather, and sports.
     For Week 3, consider using NER or embeddings for smarter extraction.
     """
-    raise NotImplementedError
+    t = contract_title.strip().rstrip("?.!")
+    low = t.lower()
+
+    crypto_map = {
+        r"\bbtc\b|\bbitcoin\b": "bitcoin price",
+        r"\beth\b|\bether(eum)?\b": "ethereum price",
+        r"\bsol\b|\bsolana\b": "solana price",
+    }
+    for pat, q in crypto_map.items():
+        if re.search(pat, low):
+            return q
+
+    weather_terms = ["rain", "snow", "storm", "hurricane", "temperature", "weather"]
+    hit = next((w for w in weather_terms if w in low), None)
+    if hit:
+        loc_match = re.search(r"\bin ([A-Z][A-Za-z]*(?: [A-Z][A-Za-z]*)*)", t)
+        loc = loc_match.group(1) if loc_match else ""
+        return f"{hit} {loc}".strip()
+
+    stop = {
+        "will", "the", "a", "an", "be", "is", "are", "was", "were",
+        "on", "in", "at", "by", "to", "of", "for", "it", "today",
+        "tonight", "tomorrow", "this", "that",
+    }
+    words = re.findall(r"[A-Za-z0-9$%]+", t)
+    kept = [w for w in words if w.lower() not in stop]
+    return " ".join(kept) if kept else t
 
 
-# ── Week 1 hello world ────────────────────────────────────────────────────────
+# ── Week 2 smoke test ─────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # TODO (Week 1): without using the class above, make a raw requests.get()
-    # call to GNews searching for "bitcoin" and print 3 headline titles.
-    # Push your notebook to notebooks/week1_team3_nlp.ipynb.
-    raw = requests.get(
-        "{GNEWS_BASE}/search",
-        params={"q": "bitcoin", "lang": "en", "max": 3, "apikey": GNEWS_API_KEY},
-        timeout=10,
-    )
-    articles = raw.json().get("articles", [])
-    for article in articles:
-        print(article["title"])
-
-
+    logging.basicConfig(level=logging.INFO)
+    client = NewsClient()
+    source = "GNews" if client.api_key else "GDELT (no GNEWS_API_KEY set)"
+    print(f"Fetching via {source}...")
+    headlines = client.fetch_headlines("bitcoin", max_results=5)
+    inserted = client.store_headlines(headlines)
+    print(f"Fetched {len(headlines)} headlines, inserted {inserted} new rows.")
+    for h in client.get_recent_headlines()[:5]:
+        print(f"  [{h['timestamp']}] {h['source']}: {h['text'][:80]}")
