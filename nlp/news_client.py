@@ -221,4 +221,13 @@ if __name__ == "__main__":
     # TODO (Week 1): without using the class above, make a raw requests.get()
     # call to GNews searching for "bitcoin" and print 3 headline titles.
     # Push your notebook to notebooks/week1_team3_nlp.ipynb.
-    print("Hello from GNews! Implement me.")
+    raw = requests.get(
+        "{GNEWS_BASE}/search",
+        params={"q": "bitcoin", "lang": "en", "max": 3, "apikey": GNEWS_API_KEY},
+        timeout=10,
+    )
+    articles = raw.json().get("articles", [])
+    for article in articles:
+        print(article["title"])
+
+
