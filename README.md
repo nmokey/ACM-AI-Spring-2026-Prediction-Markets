@@ -82,36 +82,38 @@ uv run python scripts/test_execution.py         # places 4 dummy dry-run orders
 Each team owns a top-level folder. Do not edit another team's folder without a PR.
 The only shared write zone is `signals/` (predictions JSON).
 
+Status legend: ✅ done · 🚧 in progress · ⬜ not started
+
 ```
 prediction-markets/
 │
 ├── data/                   🗄️ TEAM 1 — Data & Features
 │   ├── ingestion/
-│   │   ├── kalshi_client.py       Kalshi REST API wrapper + backfill
-│   │   ├── weather_client.py      NOAA forecast fetcher
-│   │   └── crypto_client.py       Binance public REST (BTC/ETH prices)
+│   │   ├── kalshi_client.py  ✅  Kalshi REST API — auth, get_markets, get_market, get_orderbook, _get
+│   │   ├── weather_client.py ✅  NOAA — get_forecast, get_todays_precip_prob
+│   │   └── crypto_client.py  ⬜  Binance — get_price, get_24h_stats, get_klines (Week 2)
 │   ├── features/
-│   │   ├── schema.py              ⭐ SHARED — Pydantic data contracts (do not modify w/o PR)
-│   │   └── engineer.py            Feature engineering pipeline → live_features.parquet
+│   │   ├── schema.py         ✅  ⭐ SHARED — Pydantic data contracts (do not modify w/o PR)
+│   │   └── engineer.py       ⬜  Feature engineering pipeline → live_features.parquet (Week 3)
 │   └── store/                     (gitignored) SQLite DB, raw parquet files
 │
 ├── nlp/                    🧠 TEAM 2 — Modeling & Intelligence (NLP half)
-│   ├── news_client.py             GNews + GDELT fallback headline fetcher
-│   ├── relevance.py               Cosine similarity relevance scorer (all-MiniLM-L6-v2)
-│   └── sentiment.py               FinBERT / VADER sentiment scoring (internal to Team 2)
+│   ├── news_client.py        ✅  GNews + GDELT fallback, SQLite store, _extract_query
+│   ├── relevance.py          ✅  Cosine similarity scorer (all-MiniLM-L6-v2)
+│   └── sentiment.py          ⬜  FinBERT / VADER sentiment scoring (Week 3)
 │
 ├── models/                 🧠 TEAM 2 — Modeling & Intelligence (Modeling half)
-│   ├── train.py                   XGBoost + isotonic calibration training
-│   ├── predict.py                 Live inference → signals/predictions.json
-│   ├── evaluate.py                Brier score, calibration curve, feature importance
+│   ├── train.py              ⬜  XGBoost + isotonic calibration training (Week 4)
+│   ├── predict.py            ⬜  Live inference → signals/predictions.json (Week 5)
+│   ├── evaluate.py           ⬜  Brier score, calibration curve, feature importance (Week 4)
 │   └── trained/                   (gitignored) serialized model weights
 │
 ├── execution/              ⚡ TEAM 3 — Execution
-│   ├── kelly.py                   Fractional Kelly Criterion position sizing
-│   ├── risk.py                    Pre-trade risk checks (edge, confidence, exposure)
-│   ├── order_manager.py           Order submission — the only gateway to Kalshi orders
-│   ├── dry_run.py                 Mock order logger → logs/dry_run_trades.csv
-│   └── trader.py                  Main trading loop (reads predictions → places orders)
+│   ├── kelly.py              ✅  Fractional Kelly Criterion position sizing
+│   ├── risk.py               ✅  Pre-trade risk checks (edge, confidence, exposure)
+│   ├── order_manager.py      ⬜  Order submission — the only gateway to Kalshi orders (Week 5)
+│   ├── dry_run.py            ✅  Mock order logger → logs/dry_run_trades.csv
+│   └── trader.py             ⬜  Main trading loop (reads predictions → places orders) (Week 5)
 │
 ├── signals/                🔗 SHARED (read/write by Teams 2 & 3)
 │   └── predictions.json           Team 2 writes → Team 3 reads
@@ -237,7 +239,7 @@ nohup bash scripts/run_bot.sh > logs/bot.log 2>&1 &
 
 | API | Owned by | Auth | Docs |
 |---|---|---|---|
-| Kalshi REST | Team 1, Team 3 | API key + secret in `.env` | trading-api.kalshi.com/docs |
+| Kalshi REST | Team 1, Team 3 | `KALSHI_API_KEY` Bearer token in `.env` | trading-api.kalshi.com/docs |
 | NOAA Weather | Team 1 | None (free) | weather.gov/documentation |
 | Binance Public REST | Team 1 | None (free) | binance-docs.github.io |
 | GNews | Team 2 | API key in `.env` | gnews.io — request free academic access |
