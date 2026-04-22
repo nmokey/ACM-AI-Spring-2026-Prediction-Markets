@@ -57,7 +57,16 @@ class KalshiClient:
             - Return the "markets" key from the response
             - Check the Kalshi docs for the exact query parameter names
         """
-        raise NotImplementedError
+        parameters { 
+            "status" = status
+            "limit" = limit
+        }
+
+        if category:
+            params["catergory"] = category
+
+        response = self._get("/markets", parameters = parameters)
+        return response.get("markets", [])
 
     def get_market(self, ticker: str) -> dict[str, Any]:
         """
@@ -65,6 +74,7 @@ class KalshiClient:
 
         TODO (Week 2): call self._get with the correct endpoint path.
         """
+        
         raise NotImplementedError
 
     def get_orderbook(self, ticker: str) -> dict[str, Any]:
