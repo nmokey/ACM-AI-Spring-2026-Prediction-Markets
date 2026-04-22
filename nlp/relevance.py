@@ -73,7 +73,11 @@ def score_relevance(
     query_embedding = model.encode(contract_title)
     headline_embeddings = model.encode([h["text"] for h in headlines])
 
-    scores = model.similarity(query_embedding, headline_embeddings)
-    filtered = [h for h, s in zip(headlines, scores) if s >= min_score]
+    scores = model.similarity(query_embedding, headline_embeddings)[0]
+
+    for h, s in zip(headlines, scores):
+        h["relevance_score"] = float(s)
+
+    filtered = [h for h in headlines if h["relevance_score"] >= min_score]
     filtered.sort(key=lambda x: x["relevance_score"], reverse=True)
     return filtered[:top_k]
