@@ -20,10 +20,13 @@ cp .env.example .env
 # Edit .env and fill in KALSHI_API_KEY, KALSHI_API_SECRET, GNEWS_API_KEY
 
 # 4. Smoke test your API connections
-python -m data.ingestion.kalshi_client   # prints 5 open Kalshi markets
-python -m data.ingestion.weather_client  # prints today's precip probabilities
-python -m data.ingestion.crypto_client   # prints BTC/ETH price changes
-python -m nlp.news_client                # prints 5 recent headlines
+uv run python -m data.ingestion.kalshi_client   # prints 5 open Kalshi markets
+uv run python -m data.ingestion.weather_client  # prints today's precip probabilities
+uv run python -m data.ingestion.crypto_client   # prints BTC/ETH price changes
+uv run python -m nlp.news_client                # prints 5 recent headlines
+
+# 5. Smoke test the execution pipeline (no API keys needed)
+uv run python scripts/test_execution.py         # places 4 dummy dry-run orders
 ```
 
 ## Architecture
@@ -127,7 +130,8 @@ prediction-markets/
 │
 ├── scripts/
 │   ├── run_pipeline.sh            Starts data + NLP loop on club server
-│   └── run_bot.sh                 Starts trader.py (prompts confirmation in live mode)
+│   ├── run_bot.sh                 Starts trader.py (prompts confirmation in live mode)
+│   └── test_execution.py          Smoke test for Team 3 pipeline (no API keys needed)
 │
 ├── logs/                          (gitignored) trade logs
 ├── .env.example                   API key template — copy to .env
@@ -136,31 +140,55 @@ prediction-markets/
 
 ## Data Contracts
 
-These are the interfaces **between** teams. Do not change `data/features/schema.py` without a team-wide PR — it is the plug-and-play contract that makes the pipeline modular.
+These are the interfaces **between** teams. Defined as Pydantic models in `data/features/schema.py`. Do not change that file without a team-wide PR — it is the plug-and-play contract that makes the pipeline modular.
 
 > **Note on NLP signals:** `nlp/` and `models/` are both owned by Team 2 (Modeling & Intelligence). Sentiment scores are an **internal Team 2 artifact** — they flow directly from `nlp/sentiment.py` into `models/predict.py` at runtime and are never written as a cross-team file. The only output Team 2 exposes externally is `signals/predictions.json`.
 
-**live_features.parquet — Team 1 → Team 2** *(refreshed every 15 min)*
+### `MarketFeatures` — Team 1 → Team 2 (`live_features.parquet`, refreshed every 15 min)
 
-| Field | Type | Description |
-|---|---|---|
-| contract_id | str | Kalshi market ticker e.g. `KXBTC-25APR14-T100000` |
-| timestamp | datetime UTC | Snapshot time |
-| market_price | float [0–1] | Normalized from Kalshi 0–100 cents |
-| volume_24h | float | Contracts traded in last 24h |
-| days_to_resolution | float | Time until market closes |
-| price_change_1h | float | Price delta vs. 1h ago |
-| price_change_6h | float | Price delta vs. 6h ago |
-| market_category | str | `"weather"` / `"crypto"` / `"sports"` |
+| Field | Type | Constraints | Description |
+|---|---|---|---|
+| contract_id | `str` | | Kalshi market ticker e.g. `KXBTC-26APR21-T9000000` |
+| timestamp | `datetime` (UTC) | | Snapshot time |
+| market_price | `float` | [0.0, 1.0] | Normalized from Kalshi 0–100 cents |
+| volume_24h | `float` | ≥ 0 | Contracts traded in last 24h |
+| days_to_resolution | `float` | | Time until market closes |
+| price_change_1h | `float` | | Price delta vs. 1h ago |
+| price_change_6h | `float` | | Price delta vs. 6h ago |
+| market_category | `str` | `"weather"` / `"crypto"` / `"sports"` | Contract category |
 
-**signals/predictions.json — Team 2 → Team 3** *(refreshed every 15 min)*
+### `PredictionSignal` — Team 2 → Team 3 (`signals/predictions.json`, refreshed every 15 min)
 
-| Field | Type | Description |
-|---|---|---|
-| contract_id | str | Kalshi market ticker |
-| timestamp | datetime UTC | Inference time |
-| p_model | float [0–1] | Calibrated probability of YES outcome |
-| confidence | float [0, 1] | Model uncertainty — low confidence → skip trade |
+| Field | Type | Constraints | Description |
+|---|---|---|---|
+| contract_id | `str` | | Kalshi market ticker |
+| timestamp | `datetime` (UTC) | | Inference time |
+| p_model | `float` | [0.0, 1.0] | Calibrated probability of YES outcome |
+| confidence | `float` | [0.0, 1.0] | Model certainty — low confidence → skip trade |
+
+### `SentimentSignal` — Internal Team 2 (`nlp/sentiment.json`)
+
+| Field | Type | Constraints | Description |
+|---|---|---|---|
+| contract_id | `str` | | Kalshi market ticker |
+| timestamp | `datetime` (UTC) | | Scoring time |
+| sentiment_score | `float` | [−1.0, 1.0] | Positive = bullish, negative = bearish |
+| sentiment_confidence | `float` | [0.0, 1.0] | Confidence in the sentiment score |
+| n_relevant_headlines | `int` | ≥ 0 | Number of headlines used |
+
+### `TradeRecord` — Internal Team 3 (`logs/dry_run_trades.csv` / live order log)
+
+| Field | Type | Constraints | Description |
+|---|---|---|---|
+| contract_id | `str` | | Kalshi market ticker |
+| timestamp | `datetime` (UTC) | | Order submission time |
+| side | `str` | `"YES"` / `"NO"` | Direction of the trade |
+| size | `int` | ≥ 0 | Number of contracts |
+| limit_price | `int` | [0, 100] | Price in Kalshi cents |
+| p_model | `float` | [0.0, 1.0] | Model probability at time of trade |
+| market_price | `float` | [0.0, 1.0] | Market YES price at time of trade |
+| edge | `float` | | `\|p_model − market_price\|` |
+| mode | `str` | `"dry_run"` / `"live"` | Trading mode |
 
 ## Key Metrics & Targets
 
@@ -193,7 +221,7 @@ trading:
 bash scripts/run_pipeline.sh
 
 # Start model inference (run separately, or integrate into pipeline)
-python -m models.predict
+uv run python -m models.predict
 
 # Start the trading bot
 bash scripts/run_bot.sh
