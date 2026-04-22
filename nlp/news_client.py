@@ -107,7 +107,15 @@ class NewsClient:
         TODO (Week 2): write the SELECT query and return a list of dicts.
         Hint: cursor.description gives you the column names.
         """
-        raise NotImplementedError
+        cursor = self.conn.cursor()
+        if since_iso:
+            cursor.execute("SELECT * FROM headlines WHERE timestamp > ?", (since_iso,))
+        else:
+            cursor.execute("SELECT * FROM headlines")
+        
+        cols = [col[0] for col in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+        
 
     def poll_for_contracts(
         self,
