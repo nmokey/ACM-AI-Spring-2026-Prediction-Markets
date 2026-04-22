@@ -73,6 +73,7 @@ class WeatherClient:
             - Return the max, or None if all values are None
         """
         raise NotImplementedError
+        
 
 
 # ── Week 1 hello world ────────────────────────────────────────────────────────
