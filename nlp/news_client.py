@@ -101,7 +101,39 @@ class NewsClient:
         TODO (Week 2): implement as a backup when GNews is unavailable.
         Parse resp.json()["articles"] — each has: title, domain, url, seendate.
         """
-        raise NotImplementedError
+
+        url = 'https://api.gdeltproject.org/api/v2/doc/doc'
+
+        params = {
+            "query": query,
+            "mode": "artlist",
+            "maxrecords": max_results,
+            "format": "json",
+            "timespan": "1d",
+        }
+        try:
+            resp = requests.get(url, params=params, timeout=10)
+            resp.raise_for_status()
+            articles = resp.json().get("articles", [])
+        except Exception as e:
+            print(f"[GDELT] Request failed: {e}")
+            return []
+
+        results = []
+        for i, article in enumerate(articles):
+            title = article.get("title", "").strip()
+            if not title:
+                continue
+            results.append({
+                "id":        f"gdelt-{i}-{hash(article.get('url', ''))}",
+                "text":      title,
+                "source":    article.get("domain", "gdelt"),
+                "url":       article.get("url", ""),
+                "timestamp": article.get("seendate", ""),
+                "query":     query,
+            })
+
+        return results
 
     def store_headlines(self, headlines: list[dict[str, Any]]) -> int:
         """
