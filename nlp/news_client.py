@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sqlite3
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +47,22 @@ def init_db() -> sqlite3.Connection:
 
     TODO (Week 2): write the CREATE TABLE IF NOT EXISTS statement and return conn.
     """
-    raise NotImplementedError
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS headlines (
+            id        TEXT PRIMARY KEY,
+            text      TEXT NOT NULL,
+            source    TEXT,
+            url       TEXT,
+            timestamp TEXT,
+            query     TEXT
+        )
+        """
+    )
+    conn.commit()
+    return conn
 
 
 class NewsClient:
@@ -65,16 +82,35 @@ class NewsClient:
 
         Returns:
             List of dicts with keys: id, text, source, url, timestamp, query
-
-        TODO (Week 2):
-            - If self.api_key is empty, call self._fetch_gdelt(query, max_results) instead
-            - Otherwise, GET https://gnews.io/api/v4/search with params:
-                q, lang="en", max=max_results, apikey, sortby="publishedAt"
-            - Parse each article from resp.json()["articles"] into the dict format above
-            - Give each headline a unique id (hint: import uuid; str(uuid.uuid4()))
-            - Concatenate title + ". " + description for the "text" field
         """
-        raise NotImplementedError
+        if not self.api_key:
+            return self._fetch_gdelt(query, max_results)
+
+        params = {
+            "q":       query,
+            "lang":    "en",
+            "max":     max_results,
+            "apikey":  self.api_key,
+            "sortby":  "publishedAt",
+        }
+
+        resp = self.session.get(f"{GNEWS_BASE}/search", params=params, timeout=10)
+        resp.raise_for_status()
+
+        headlines = []
+        for a in resp.json().get("articles", []):
+            title = a.get("title", "")
+            desc  = a.get("description", "") or ""
+            headlines.append({
+                "id":        str(uuid.uuid4()),
+                "text":      f"{title}. {desc}".strip(". "),
+                "source":    a.get("source", {}).get("name", ""),
+                "url":       a.get("url", ""),
+                "timestamp": a.get("publishedAt", ""),
+                "query":     query,
+            })
+
+        return headlines
 
     def _fetch_gdelt(self, query: str, max_results: int) -> list[dict[str, Any]]:
         """
@@ -86,8 +122,40 @@ class NewsClient:
         TODO (Week 2): implement as a backup when GNews is unavailable.
         Parse resp.json()["articles"] — each has: title, domain, url, seendate.
         """
-        raise NotImplementedError
+        url = 'https://api.gdeltproject.org/api/v2/doc/doc'
 
+        params = {
+            "query": query,
+            "mode": "artlist",
+            "maxrecords": max_results,
+            "format": "json",
+            "timespan": "1d",
+        }
+        try:
+            resp = requests.get(url, params=params, timeout=10)
+            resp.raise_for_status()
+            articles = resp.json().get("articles", [])
+        except Exception as e:
+            print(f"[GDELT] Request failed: {e}")
+            return []
+
+        results = []
+        for i, article in enumerate(articles):
+            title = article.get("title", "").strip()
+            if not title:
+                continue
+            results.append({
+                "id":        f"gdelt-{i}-{hash(article.get('url', ''))}",
+                "text":      title,
+                "source":    article.get("domain", "gdelt"),
+                "url":       article.get("url", ""),
+                "timestamp": article.get("seendate", ""),
+                "query":     query,
+            })
+
+        return results
+
+    
     def store_headlines(self, headlines: list[dict[str, Any]]) -> int:
         """
         Insert headlines into the SQLite store.
@@ -96,7 +164,21 @@ class NewsClient:
         TODO (Week 2): iterate over headlines and insert each one.
         Don't forget to call self.conn.commit() after all inserts.
         """
-        raise NotImplementedError
+        if not headlines:
+            return 0
+        rows = [
+            (h["id"], h["text"], h.get("source"), h.get("url"),
+             h.get("timestamp"), h.get("query"))
+            for h in headlines
+        ]
+        before = self.conn.total_changes
+        self.conn.executemany(
+            "INSERT OR IGNORE INTO headlines (id, text, source, url, timestamp, query) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        self.conn.commit()
+        return self.conn.total_changes - before
 
     def get_recent_headlines(self, since_iso: str | None = None) -> list[dict[str, Any]]:
         """
@@ -107,7 +189,14 @@ class NewsClient:
         TODO (Week 2): write the SELECT query and return a list of dicts.
         Hint: cursor.description gives you the column names.
         """
-        raise NotImplementedError
+        cursor = self.conn.cursor()
+        if since_iso:
+            cursor.execute("SELECT * FROM headlines WHERE timestamp > ?", (since_iso,))
+        else:
+            cursor.execute("SELECT * FROM headlines")
+
+        cols = [col[0] for col in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
 
     def poll_for_contracts(
         self,
@@ -137,12 +226,47 @@ def _extract_query(contract_title: str) -> str:
     TODO (Week 2): write simple keyword heuristics for crypto, weather, and sports.
     For Week 3, consider using NER or embeddings for smarter extraction.
     """
-    raise NotImplementedError
+    t = contract_title.strip().rstrip("?.!")
+    low = t.lower()
+
+    crypto_map = {
+        r"\bbtc\b|\bbitcoin\b": "bitcoin price",
+        r"\beth\b|\bether(eum)?\b": "ethereum price",
+        r"\bsol\b|\bsolana\b": "solana price",
+    }
+    for pat, q in crypto_map.items():
+        if re.search(pat, low):
+            return q
+
+    weather_terms = ["rain", "snow", "storm", "hurricane", "temperature", "weather"]
+    hit = next((w for w in weather_terms if w in low), None)
+    if hit:
+        loc_match = re.search(r"\bin ([A-Z][A-Za-z]*(?: [A-Z][A-Za-z]*)*)", t)
+        loc = loc_match.group(1) if loc_match else ""
+        return f"{hit} {loc}".strip()
+
+    stop = {
+        "will", "the", "a", "an", "be", "is", "are", "was", "were",
+        "on", "in", "at", "by", "to", "of", "for", "it", "today",
+        "tonight", "tomorrow", "this", "that",
+    }
+    words = re.findall(r"[A-Za-z0-9$%]+", t)
+    kept = [w for w in words if w.lower() not in stop]
+    return " ".join(kept) if kept else t
 
 
-# ── Week 1 hello world ────────────────────────────────────────────────────────
+# ── Week 2 smoke test ─────────────────────────────────────────────────────────
 if __name__ == "__main__":
     # TODO (Week 1): without using the class above, make a raw requests.get()
     # call to GNews searching for "bitcoin" and print 3 headline titles.
     # Push your notebook to notebooks/week1_team3_nlp.ipynb.
-    print("Hello from GNews! Implement me.")
+    raw = requests.get(
+        f"{GNEWS_BASE}/search",
+        params={"q": "bitcoin", "lang": "en", "max": 3, "apikey": GNEWS_API_KEY},
+        timeout=10,
+    )
+    articles = raw.json().get("articles", [])
+    for article in articles:
+        print(article["title"])
+
+

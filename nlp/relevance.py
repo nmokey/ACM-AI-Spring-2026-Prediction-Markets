@@ -47,7 +47,8 @@ def score_relevance(
     Args:
         contract_title: e.g. "Will BTC close above $90k on April 20?"
         headlines:      list of dicts, each with at least {"id": str, "text": str}
-        top_k:          max headlines to return
+        top_k:          max headlines to retu
+        rn
         min_score:      minimum cosine similarity to include (0.0–1.0)
 
     Returns:
@@ -64,4 +65,19 @@ def score_relevance(
         6. Filter to scores >= min_score, sort descending, return top_k
         7. Add "relevance_score": float to each returned headline dict
     """
-    raise NotImplementedError
+
+    if not headlines:
+        return []
+    model = _get_model()
+
+    query_embedding = model.encode(contract_title)
+    headline_embeddings = model.encode([h["text"] for h in headlines])
+
+    scores = model.similarity(query_embedding, headline_embeddings)[0]
+
+    for h, s in zip(headlines, scores):
+        h["relevance_score"] = float(s)
+
+    filtered = [h for h in headlines if h["relevance_score"] >= min_score]
+    filtered.sort(key=lambda x: x["relevance_score"], reverse=True)
+    return filtered[:top_k]

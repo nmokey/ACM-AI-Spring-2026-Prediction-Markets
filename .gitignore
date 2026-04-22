@@ -12,6 +12,7 @@ data/features/
 models/trained/
 logs/
 signals/
+graphify-out/
 
 # Keep these dirs tracked but empty
 !data/store/.gitkeep
@@ -26,3 +27,5 @@ signals/
 # OS
 .DS_Store
 Thumbs.db
+
+uv.lock

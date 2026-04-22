@@ -33,3 +33,9 @@ packages = ["backtest", "data", "execution", "models", "nlp"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
+
+[dependency-groups]
+dev = [
+    "pytest-xdist>=3.8.0",
+]
