@@ -1,27 +1,24 @@
 """
 data/ingestion/crypto_client.py
 ────────────────────────────────
-Binance public REST API client for spot prices.
-
-Team 1 — implement all methods marked with TODO.
-
-Docs:    https://binance-docs.github.io/apidocs/spot/en/
-Auth:    None required for public market data endpoints.
-Base URL: https://api.binance.com/api/v3
+Coinbase API for spot prices
+Base URL: https://api.coinbase.com/api/v3/brokerage
+Docs:   https://docs.cloud.coinbase.com/advanced-trade-api/docs/rest-api-overview
 
 Useful endpoints:
-    GET /ticker/price           → current spot price for a symbol
-    GET /ticker/24hr            → 24-hour rolling stats (price change %, volume, etc.)
-    GET /klines                 → candlestick (OHLCV) data for any interval
+    GET /market/products/{id}/ticker  → current spot price for a symbol
+    GET /market/products/{id}         → 24-hour rolling stats (price change %, volume, etc.)
+    GET /market/products/{id}/candles → candlestick (OHLCV) data for any interval
 """
 
 from __future__ import annotations
 
 import requests
+from datetime import datetime, timezone
 from typing import Any
 
-BASE_URL = "https://api.binance.com/api/v3"
-DEFAULT_PAIRS = ["BTCUSDT", "ETHUSDT"]
+BASE_URL = "https://api.coinbase.com/api/v3/brokerage/market"
+DEFAULT_PAIRS = ["BTC-USD", "ETH-USD"]
 
 
 class CryptoClient:
@@ -37,7 +34,10 @@ class CryptoClient:
             - GET /ticker/price with params={"symbol": symbol}
             - Return float(resp.json()["price"])
         """
-        raise NotImplementedError
+        url = f"{BASE_URL}/products/{symbol}/ticker"
+        resp = self.session.get(url)
+        resp.raise_for_status()
+        return float(resp.json()["price"])
 
     def get_24h_stats(self, symbol: str) -> dict[str, Any]:
         """
@@ -47,7 +47,10 @@ class CryptoClient:
 
         TODO (Week 2): GET /ticker/24hr with the symbol param.
         """
-        raise NotImplementedError
+        url = f"{BASE_URL}/products/{symbol}"
+        resp = self.session.get(url)
+        resp.raise_for_status()
+        return resp.json()
 
     def get_klines(
         self,
@@ -72,7 +75,29 @@ class CryptoClient:
         TODO (Week 2): GET /klines, parse the raw list-of-lists response into
         a list of readable dicts. Convert open_time from milliseconds to a datetime.
         """
-        raise NotImplementedError
+        url = f"{BASE_URL}/products/{symbol}/candles"
+        # Coinbase uses start/end timestamps or a granularity string
+        params = {"granularity": interval}
+        
+        resp = self.session.get(url, params=params)
+        resp.raise_for_status()
+        
+        raw_candles = resp.json().get("candles", [])
+        
+        parsed_candles = []
+        for c in raw_candles:
+            # Coinbase V3 returns: start (sec), low, high, open, close, volume
+            parsed_candles.append({
+                "open_time": datetime.fromtimestamp(int(c["start"]), tz=timezone.utc),
+                "open": float(c["open"]),
+                "high": float(c["high"]),
+                "low": float(c["low"]),
+                "close": float(c["close"]),
+                "volume": float(c["volume"]),
+            })
+
+        parsed_candles.sort(key=lambda x: x["open_time"])
+        return parsed_candles[-limit:]
 
     def compute_price_changes(self, symbol: str) -> dict[str, float]:
         """
@@ -93,7 +118,20 @@ class CryptoClient:
             - 6h ago    = candles[-7]["close"]
             - change    = (current - past) / past
         """
-        raise NotImplementedError
+        candles = self.get_klines(symbol=symbol, interval="ONE_HOUR", limit=7)
+        
+        if len(candles) < 7:
+            raise ValueError("Not enough candle data returned.")
+
+        current_price = candles[-1]["close"]
+        price_1h_ago = candles[-2]["close"]
+        price_6h_ago = candles[-7]["close"]
+
+        return {
+            "current_price": current_price,
+            "price_change_1h": (current_price - price_1h_ago) / price_1h_ago,
+            "price_change_6h": (current_price - price_6h_ago) / price_6h_ago,
+        }
 
 
 # ── Week 1 hello world ────────────────────────────────────────────────────────
@@ -101,4 +139,10 @@ if __name__ == "__main__":
     # TODO (Week 1): make a raw requests.get() call to Binance to fetch the
     # current BTC price and print it. No class needed yet — just prove the API works.
     # Push your notebook to notebooks/week1_team1.ipynb.
-    print("Hello from Binance! Implement me.")
+    try:
+        test_url = "https://api.coinbase.com/api/v3/brokerage/market/products/BTC-USD/ticker"
+        response = requests.get(test_url)
+        btc_price = response.json()["price"]
+        print(f"Hello from Coinbase! Current BTC Price: ${btc_price}")
+    except Exception as e:
+        print(f"Connection failed: {e}")
