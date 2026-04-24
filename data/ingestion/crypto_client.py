@@ -12,10 +12,15 @@ Useful endpoints:
 """
 
 from __future__ import annotations
-
-import requests
+import os
+#import requests
 from datetime import datetime, timezone
 from typing import Any
+from dotenv import load_dotenv
+
+import time
+
+from coinbase.rest import RESTClient
 
 BASE_URL = "https://api.coinbase.com/api/v3/brokerage/market"
 DEFAULT_PAIRS = ["BTC-USD", "ETH-USD"]
@@ -24,7 +29,12 @@ DEFAULT_PAIRS = ["BTC-USD", "ETH-USD"]
 class CryptoClient:
 
     def __init__(self) -> None:
-        self.session = requests.Session()
+        load_dotenv()
+
+        api_key = os.getenv("COINBASE_API_KEY")
+        api_secret = os.getenv("COINBASE_API_SECRET")
+
+        self.client = RESTClient(api_key=api_key, api_secret=api_secret)
 
     def get_price(self, symbol: str) -> float:
         """
@@ -34,10 +44,9 @@ class CryptoClient:
             - GET /ticker/price with params={"symbol": symbol}
             - Return float(resp.json()["price"])
         """
-        url = f"{BASE_URL}/products/{symbol}/ticker"
-        resp = self.session.get(url)
-        resp.raise_for_status()
-        return float(resp.json()["price"])
+
+        product = self.client.get_product(product_id=symbol)
+        return float(product.price)
 
     def get_24h_stats(self, symbol: str) -> dict[str, Any]:
         """
@@ -47,22 +56,25 @@ class CryptoClient:
 
         TODO (Week 2): GET /ticker/24hr with the symbol param.
         """
-        url = f"{BASE_URL}/products/{symbol}"
-        resp = self.session.get(url)
-        resp.raise_for_status()
-        return resp.json()
+        product = self.client.get_product(product_id=symbol)
+        return {
+            "last_price": product.price,
+            "volume_24h": product.volume_24h,
+            "price_change_pct_24h": product.price_percentage_change_24h,
+            "status": product.status 
+        }
 
     def get_klines(
         self,
         symbol: str,
-        interval: str = "1h",
+        interval: str = "ONE_HOUR",
         limit: int = 24,
     ) -> list[dict[str, Any]]:
         """
         Fetch recent candlestick (OHLCV) data.
 
         Args:
-            symbol:   e.g. "BTCUSDT"
+            symbol:   e.g. "BTC-USD"
             interval: "1m" | "5m" | "1h" | "4h" | "1d"
             limit:    number of candles (max 1000)
 
@@ -75,25 +87,25 @@ class CryptoClient:
         TODO (Week 2): GET /klines, parse the raw list-of-lists response into
         a list of readable dicts. Convert open_time from milliseconds to a datetime.
         """
-        url = f"{BASE_URL}/products/{symbol}/candles"
-        # Coinbase uses start/end timestamps or a granularity string
-        params = {"granularity": interval}
-        
-        resp = self.session.get(url, params=params)
-        resp.raise_for_status()
-        
-        raw_candles = resp.json().get("candles", [])
+        end_time = int(time.time())
+        start_time = end_time - (limit * 3600 *1.5)
+
+        resp = self.client.get_candles(
+            product_id=symbol, 
+            granularity=interval,
+            start=str(int(start_time)),
+            end=str(int(end_time))
+        )
         
         parsed_candles = []
-        for c in raw_candles:
-            # Coinbase V3 returns: start (sec), low, high, open, close, volume
+        for c in resp.candles:
             parsed_candles.append({
-                "open_time": datetime.fromtimestamp(int(c["start"]), tz=timezone.utc),
-                "open": float(c["open"]),
-                "high": float(c["high"]),
-                "low": float(c["low"]),
-                "close": float(c["close"]),
-                "volume": float(c["volume"]),
+                "open_time": datetime.fromtimestamp(int(c.start), tz=timezone.utc),
+                "open": float(c.open),
+                "high": float(c.high),
+                "low": float(c.low),
+                "close": float(c.close),
+                "volume": float(c.volume),
             })
 
         parsed_candles.sort(key=lambda x: x["open_time"])
@@ -120,18 +132,17 @@ class CryptoClient:
         """
         candles = self.get_klines(symbol=symbol, interval="ONE_HOUR", limit=7)
         
-        if len(candles) < 7:
-            raise ValueError("Not enough candle data returned.")
-
-        current_price = candles[-1]["close"]
-        price_1h_ago = candles[-2]["close"]
-        price_6h_ago = candles[-7]["close"]
+        current = candles[-1]["close"]
+        past_1h = candles[-2]["close"]
+        past_6h = candles[-7]["close"]
 
         return {
-            "current_price": current_price,
-            "price_change_1h": (current_price - price_1h_ago) / price_1h_ago,
-            "price_change_6h": (current_price - price_6h_ago) / price_6h_ago,
+            "current_price": current,
+            "price_change_1h": (current - past_1h) / past_1h,
+            "price_change_6h": (current - past_6h) / past_6h,
         }
+
+        
 
 
 # ── Week 1 hello world ────────────────────────────────────────────────────────
@@ -139,10 +150,18 @@ if __name__ == "__main__":
     # TODO (Week 1): make a raw requests.get() call to Binance to fetch the
     # current BTC price and print it. No class needed yet — just prove the API works.
     # Push your notebook to notebooks/week1_team1.ipynb.
+    
+    client = CryptoClient()
     try:
-        test_url = "https://api.coinbase.com/api/v3/brokerage/market/products/BTC-USD/ticker"
-        response = requests.get(test_url)
-        btc_price = response.json()["price"]
-        print(f"Hello from Coinbase! Current BTC Price: ${btc_price}")
+        btc_price = client.get_price("BTC-USD")
+        print(f"Hello from Coinbase! Current BTC Price: ${btc_price:,.2f}")
+        
+        stats = client.get_24h_stats("BTC-USD")
+        print(f"24h Volume: {stats['volume_24h']}")
+
+        trends = client.compute_price_changes("BTC-USD")
+        print(f"1h Change: {trends['price_change_1h']:.2%}")
+        print(f"6h Change: {trends['price_change_6h']:.2%}")
+
     except Exception as e:
-        print(f"Connection failed: {e}")
+        print(f"Failed to connect: {e}")
