@@ -21,9 +21,9 @@ markets:
     - "New York"
     - "Los Angeles"
     - "Chicago"
-  crypto_pairs:            # for Binance price ingestion
-    - "BTCUSDT"
-    - "ETHUSDT"
+  crypto_pairs:            # for Coinbase price ingestion
+    - "BTC-USD"
+    - "ETH-USD"
 
 pipeline:
   feature_refresh_interval_min: 15   # how often Team 1 refreshes live_features.parquet
