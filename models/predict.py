@@ -45,46 +45,52 @@ FEATURE_COLS = [
 
 
 def load_model():
-    """
-    Load the trained model from disk.
+    import joblib 
 
-    TODO (Week 5):
-        import joblib
-        if not MODEL_PATH.exists(): raise FileNotFoundError(...)
-        return joblib.load(MODEL_PATH)
-    """
-    raise NotImplementedError
+    if not MODEL_PATH().exists():
+        raise FileNotFoundError("Model not found at {MODEL_PATH}")
+
+    return joblib.load(MODEL_PATH)
 
 
 def predict() -> dict[str, PredictionSignal]:
-    """
-    Run live inference on all active (unresolved) contracts.
+    import pandas as pd
+    import json
 
-    TODO (Week 5):
-        1. Load model with load_model()
-        2. Read live_features.parquet — filter OUT rows with a resolved_yes label
-           (we only want to predict on contracts still open)
-        3. Join sentiment_score and sentiment_confidence from nlp/sentiment.json — internal Team 2 cache (default 0.0)
-        4. Fill NaNs in FEATURE_COLS with 0.0
-        5. Call model.predict_proba(X)[:, 1] to get P(YES) for each row
-        6. Compute confidence as a proxy for certainty:
-               confidence = abs(p_model - 0.5) * 2
-               (scales distance from 0.5 into [0, 1])
-        7. Build a PredictionSignal per contract and store in a dict
-        8. Call save_predictions() and return the dict
-    """
-    raise NotImplementedError
+    model = load_model()
+    df = pd.read_parquet("data/live_features.parquet")
+    df = df[df["resolved_yes"].isna()]
+
+    with open("nlp/sentiment.json") as f:
+        sentiment = json.load(f)
+        sentiment_df = pd.DataFrame(sentiment).set_index("market_id")
+
+        df = df.join(sentiment_df[["sentiment_score", "sentiment_confidence"]], how="left")
+
+    df[FEATURE_COLS] = df[FEATURE_COLS].fillna(0.0)
+
+    X = df[FEATURE_COLS]
+    p_yes = model.predict_proba(X)[:, 1]
+
+    confidence = abs(p_yes - 0.5) * 2
+
+    signals = {}
+    for i, row in enumerate(df.itertuples()):
+        signals[row.Index] = PredictionSignal(
+            market_id=row.Index,
+            p_yes=float(p_yes[i]),
+            confidence=float(confidence[i]),
+        )
+    save_predictions(signals)
+    return signals
+
 
 
 def save_predictions(signals: dict[str, PredictionSignal]) -> None:
-    """
-    Write predictions dict to signals/predictions.json.
-
-    TODO (Week 5):
-        payload = {cid: sig.model_dump(mode="json") for cid, sig in signals.items()}
-        json.dump(payload, open(PREDICTIONS_PATH, "w"), indent=2, default=str)
-    """
-    raise NotImplementedError
+    import json
+    
+    payload = {cid: sig.model_dump(mode="json") for cid, sig in signals.items()}
+    json.dump(payload, open(PREDICTIONS_PATH, "w"), indent=2, default=str)
 
 
 if __name__ == "__main__":
