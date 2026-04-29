@@ -53,21 +53,21 @@ def score_text(text: str, use_finbert: bool = True) -> tuple[float, float]:
         (sentiment_score, confidence)
         score in [-1, 1]:  positive → bullish/favorable, negative → bearish/unfavorable
         confidence in [0, 1]
-
-    TODO (Week 3 — start with VADER, upgrade to FinBERT in Week 4):
-
-    VADER approach (easier):
+    """
+    if use_finbert:
+        from transformers import pipeline
+        pipe = pipeline("text-classification", model="ProsusAI/finbert", top_k=None)
+        result = pipe(text[:512])[0]  # list of {label, score}
+        scores = {r["label"]: r["score"] for r in result}
+        score = scores.get("positive", 0.0) - scores.get("negative", 0.0)
+        confidence = 1 - scores.get("neutral", 0.0)
+    else:
+        from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
         analyzer = SentimentIntensityAnalyzer()
         scores = analyzer.polarity_scores(text)
-        return scores["compound"], abs(scores["compound"])
-
-    FinBERT approach (more accurate for financial text):
-        result = pipe(text[:512])[0]   # list of {label, score}
-        Convert to a single [-1, 1] score:
-            score = P(positive) - P(negative)
-            confidence = 1 - P(neutral)
-    """
-    raise NotImplementedError
+        score = scores["compound"]
+        confidence = abs(scores["compound"])
+    return score, confidence
 
 
 def build_sentiment_signals(
