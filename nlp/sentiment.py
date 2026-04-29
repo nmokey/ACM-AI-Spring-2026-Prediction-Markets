@@ -96,7 +96,45 @@ def build_sentiment_signals(
                f. Build and store a SentimentSignal
         3. Return the dict
     """
-    raise NotImplementedError
+    
+    client = NewsClient()
+    all_headlines = client.get_recent_headlines()
+
+    signals: dict[str, SentimentSignal] = {}
+    now = datetime.now(timezone.utc)
+
+    for contract in contracts:
+        cid = contract["contract_id"]
+        relevant = score_relevance(contract["title"], all_headlines)
+
+        if not relevant:
+            signals[cid] = SentimentSignal(
+                contract_id=cid,
+                timestamp=now,
+                sentiment_score=0.0,
+                sentiment_confidence=0.0,
+                n_relevant_headlines=0,
+            )
+            continue
+
+        total_weight = sum(h["relevance_score"] for h in relevant)
+        weighted_score = 0.0
+        weighted_conf = 0.0
+        for h in relevant:
+            w = h["relevance_score"] / total_weight
+            s, c = score_text(h["text"], use_finbert=use_finbert)
+            weighted_score += w * s
+            weighted_conf += w * c
+
+        signals[cid] = SentimentSignal(
+            contract_id=cid,
+            timestamp=now,
+            sentiment_score=max(-1.0, min(1.0, weighted_score)),
+            sentiment_confidence=max(0.0, min(1.0, weighted_conf)),
+            n_relevant_headlines=len(relevant),
+        )
+
+    return signals
 
 
 def save_sentiment_signals(signals: dict[str, SentimentSignal]) -> None:
@@ -107,7 +145,8 @@ def save_sentiment_signals(signals: dict[str, SentimentSignal]) -> None:
         - Call sig.model_dump(mode="json") on each signal
         - json.dump the result to SENTIMENT_PATH
     """
-    raise NotImplementedError
+    out = {cid: sig.model_dump(mode="json") for cid, sig in signals.items()}
+    SENTIMENT_PATH.write_text(json.dumps(out, indent=2))
 
 
 if __name__ == "__main__":
