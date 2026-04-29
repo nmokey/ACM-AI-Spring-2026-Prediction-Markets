@@ -152,16 +152,13 @@ if __name__ == "__main__":
     # Push your notebook to notebooks/week1_team1.ipynb.
     
     client = CryptoClient()
-    try:
-        btc_price = client.get_price("BTC-USD")
-        print(f"Hello from Coinbase! Current BTC Price: ${btc_price:,.2f}")
+    btc_price = client.get_price("BTC-USD")
+    print(f"Hello from Coinbase! Current BTC Price: ${btc_price:,.2f}")
         
-        stats = client.get_24h_stats("BTC-USD")
-        print(f"24h Volume: {stats['volume_24h']}")
+    stats = client.get_24h_stats("BTC-USD")
+    print(f"24h Volume: {stats['volume_24h']}")
 
-        trends = client.compute_price_changes("BTC-USD")
-        print(f"1h Change: {trends['price_change_1h']:.2%}")
-        print(f"6h Change: {trends['price_change_6h']:.2%}")
+    trends = client.compute_price_changes("BTC-USD")
+    print(f"1h Change: {trends['price_change_1h']:.2%}")
+    print(f"6h Change: {trends['price_change_6h']:.2%}")
 
-    except Exception as e:
-        print(f"Failed to connect: {e}")
