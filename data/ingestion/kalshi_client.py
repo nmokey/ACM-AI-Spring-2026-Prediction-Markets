@@ -6,32 +6,66 @@ Kalshi REST API client.
 Team 1 — implement all methods marked with TODO.
 
 Docs:    https://trading-api.kalshi.com/docs
-Auth:    KALSHI_API_KEY in your .env file (Bearer token)
-Base URL: https://api.elections.kalshi.com/trade-api/v2
+Auth:    RSA-PSS signature — KALSHI_API_KEY (UUID) + KALSHI_API_SECRET (PEM private key)
+Base URL: https://trading-api.kalshi.com/trade-api/v2
 """
 
 from __future__ import annotations
 
+import base64
 import os
+import time
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 from dotenv import load_dotenv
 
 load_dotenv()
 
-BASE_URL = os.getenv("KALSHI_BASE_URL", "https://api.elections.kalshi.com/trade-api/v2")
+BASE_URL = os.getenv("KALSHI_BASE_URL", "https://trading-api.kalshi.com/trade-api/v2")
 
 
 class KalshiClient:
 
     def __init__(self) -> None:
         self.api_key = os.getenv("KALSHI_API_KEY", "")
+        raw_secret = os.getenv("KALSHI_API_SECRET", "")
+        # Reconstruct PEM if the .env collapsed newlines.
+        # MIIEpA prefix = PKCS#1 RSA key; MIIEvA/MIIEv = PKCS#8.
+        if raw_secret and "-----" not in raw_secret:
+            if raw_secret.startswith("MIIEpA") or raw_secret.startswith("MIIEo"):
+                header, footer = "-----BEGIN RSA PRIVATE KEY-----", "-----END RSA PRIVATE KEY-----"
+            else:
+                header, footer = "-----BEGIN PRIVATE KEY-----", "-----END PRIVATE KEY-----"
+            raw_secret = (
+                header + "\n"
+                + "\n".join(raw_secret[i:i+64] for i in range(0, len(raw_secret), 64))
+                + "\n" + footer
+            )
+        self._private_key = serialization.load_pem_private_key(
+            raw_secret.encode(), password=None
+        ) if raw_secret else None
         self.session = requests.Session()
-        self.session.headers.update({
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
-        })
+        self.session.headers.update({"Content-Type": "application/json"})
+
+    def _auth_headers(self, method: str, path: str) -> dict[str, str]:
+        """Generate RSA-PSS auth headers for a single request."""
+        ts = str(int(time.time() * 1000))
+        # Strip query string — sign only the path component
+        parsed_path = urlparse(path).path
+        msg = (ts + method.upper() + parsed_path).encode()
+        sig = self._private_key.sign(msg, padding.PSS(
+            mgf=padding.MGF1(hashes.SHA256()),
+            salt_length=padding.PSS.DIGEST_LENGTH,
+        ), hashes.SHA256())
+        return {
+            "KALSHI-ACCESS-KEY": self.api_key,
+            "KALSHI-ACCESS-TIMESTAMP": ts,
+            "KALSHI-ACCESS-SIGNATURE": base64.b64encode(sig).decode(),
+        }
 
     # ── Market discovery ─────────────────────────────────────────────────────
 
@@ -149,30 +183,35 @@ class KalshiClient:
             count:       number of contracts
             limit_price: price in Kalshi cents (0–100)
 
-        TODO (Week 5):
-            - Build the payload dict and call self._post("/portfolio/orders", json=payload)
-            - Read the Kalshi docs for the exact required fields
+        NOTE: limit_price is in Kalshi cents (0–100). The API expects yes_price
+        or no_price depending on side, both in cents.
         """
-        raise NotImplementedError
+        price_key = "yes_price" if side.lower() == "yes" else "no_price"
+        payload = {
+            "ticker": ticker,
+            "side": side.lower(),
+            "action": "buy",
+            "type": order_type,
+            "count": count,
+            price_key: limit_price,
+        }
+        return self._post("/portfolio/orders", json=payload)["order"]
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _get(self, path: str, params: dict | None = None) -> dict[str, Any]:
-        """
-        Make a GET request to BASE_URL + path.
-
-        TODO (Week 2):
-            - Use self.session.get()
-            - Call raise_for_status() to catch HTTP errors
-            - Return resp.json()
-        """
-        resp = self.session.get(BASE_URL + path, params=params)
+        """Make a GET request to BASE_URL + path."""
+        full_path = "/trade-api/v2" + path
+        resp = self.session.get(BASE_URL + path, params=params, headers=self._auth_headers("GET", full_path))
         resp.raise_for_status()
         return resp.json()
 
     def _post(self, path: str, json: dict | None = None) -> dict[str, Any]:
-        """Make a POST request to BASE_URL + path. TODO (Week 5): same pattern as _get."""
-        raise NotImplementedError
+        """Make a POST request to BASE_URL + path."""
+        full_path = "/trade-api/v2" + path
+        resp = self.session.post(BASE_URL + path, json=json, headers=self._auth_headers("POST", full_path))
+        resp.raise_for_status()
+        return resp.json()
 
 
 if __name__ == "__main__":
