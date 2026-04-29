@@ -18,6 +18,10 @@ Key concepts:
 from __future__ import annotations
 
 import numpy as np
+from sklearn.calibration import calibration_curve
+from sklearn.metrics import brier_score_loss, log_loss
+
+BRIER_TARGET = 0.20
 
 
 def evaluate_model(
@@ -28,29 +32,45 @@ def evaluate_model(
 ) -> dict[str, float]:
     """
     Evaluate a fitted classifier on a held-out test set and print results.
-
-    TODO (Week 4):
-        1. Call model.predict_proba(X_test)[:, 1] to get P(YES) predictions
-        2. Compute brier_score_loss(y_test, proba) from sklearn.metrics
-        3. Compute log_loss(y_test, proba) from sklearn.metrics
-        4. Print both metrics with a clear pass/fail against target (Brier < 0.20)
-        5. Call _print_feature_importance(model, feature_names)
-        6. Return {"brier_score": ..., "log_loss": ...}
     """
-    raise NotImplementedError
+    proba = model.predict_proba(X_test)[:, 1]
+    brier = brier_score_loss(y_test, proba)
+    ll = log_loss(y_test, proba)
+
+    status = "PASS" if brier < BRIER_TARGET else "FAIL"
+    print(f"\n── Model Evaluation ──────────────────────")
+    print(f"  Brier score : {brier:.4f}  (target < {BRIER_TARGET}) [{status}]")
+    print(f"  Log-loss    : {ll:.4f}")
+    print(f"──────────────────────────────────────────\n")
+
+    _print_feature_importance(model, feature_names)
+
+    return {"brier_score": brier, "log_loss": ll}
 
 
 def _print_feature_importance(model, feature_names: list[str] | None) -> None:
     """
     Print a ranked feature importance table.
-
-    TODO (Week 4):
-        - Try to access model.estimator.feature_importances_ (XGBoost exposes this)
-        - The CalibratedClassifierCV wrapper stores the base model in
-          model.calibrated_classifiers_[0].estimator
-        - Sort features by importance and print a simple text bar chart
     """
-    raise NotImplementedError
+    try:
+        # CalibratedClassifierCV averages across folds; grab the first estimator
+        base = model.calibrated_classifiers_[0].estimator
+        importances = base.feature_importances_
+    except AttributeError:
+        print("  [feature importance] model structure not recognised — skipping")
+        return
+
+    if feature_names is None:
+        feature_names = [f"f{i}" for i in range(len(importances))]
+
+    pairs = sorted(zip(importances, feature_names), reverse=True)
+    max_imp = pairs[0][0] if pairs else 1.0
+
+    print("── Feature Importance ────────────────────")
+    for imp, name in pairs:
+        bar_len = round((imp / max_imp) * 20)
+        print(f"  {name:<25} {'█' * bar_len} {imp:.4f}")
+    print("──────────────────────────────────────────\n")
 
 
 def calibration_data(
@@ -68,10 +88,6 @@ def calibration_data(
         plt.plot([0, 1], [0, 1], '--', label='Perfect calibration')
         plt.xlabel('Mean predicted probability')
         plt.ylabel('Fraction of positives')
-
-    TODO (Week 4):
-        from sklearn.calibration import calibration_curve
-        proba = model.predict_proba(X_test)[:, 1]
-        return calibration_curve(y_test, proba, n_bins=n_bins, strategy="uniform")
     """
-    raise NotImplementedError
+    proba = model.predict_proba(X_test)[:, 1]
+    return calibration_curve(y_test, proba, n_bins=n_bins, strategy="uniform")
