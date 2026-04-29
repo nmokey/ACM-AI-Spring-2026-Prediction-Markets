@@ -97,7 +97,13 @@ class KalshiClient:
             - Call get_markets with status="settled"
             - Return both the market list AND the pagination cursor from the response
         """
-        raise NotImplementedError
+        params: dict[str, Any] = {"status": "settled", "limit": limit}
+        if category is not None:
+            params["category"] = category
+        if cursor is not None:
+            params["cursor"] = cursor
+        resp = self._get("/markets", params=params)
+        return resp["markets"], resp.get("cursor") or None
 
     def backfill_all_resolved(
         self, category: str | None = None, max_pages: int = 20
@@ -110,7 +116,16 @@ class KalshiClient:
             - Stop when cursor is None or max_pages is reached
             - Add a small time.sleep() between calls to avoid rate limiting
         """
-        raise NotImplementedError
+        import time
+        all_markets: list[dict[str, Any]] = []
+        cursor: str | None = None
+        for _ in range(max_pages):
+            page, cursor = self.get_resolved_markets(category=category, cursor=cursor)
+            all_markets.extend(page)
+            if cursor is None:
+                break
+            time.sleep(0.5)
+        return all_markets
 
     # ── Order placement ───────────────────────────────────────────────────────
 
