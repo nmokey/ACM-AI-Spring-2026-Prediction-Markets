@@ -213,7 +213,17 @@ class NewsClient:
             - Sleep between calls to respect rate limits
             - Return total new headlines stored
         """
-        raise NotImplementedError
+        total_stored = 0
+        
+        for title in contract_titles:
+            query = _extract_query(title)
+            logger.info(f"Polling contract: {title!r} → query: {query!r}")
+            
+            headlines = self.fetch_headlines(query)
+            stored = self.store_headlines(headlines)
+            total_stored += stored
+        
+        return total_stored
 
 
 def _extract_query(contract_title: str) -> str:
@@ -268,5 +278,3 @@ if __name__ == "__main__":
     articles = raw.json().get("articles", [])
     for article in articles:
         print(article["title"])
-
-
