@@ -59,12 +59,15 @@ def build_features() -> pd.DataFrame:
     fetched_at = datetime.now(timezone.utc).isoformat()
     rows = []
     for m in markets:
-        yes_ask = m.get("yes_ask")
-        yes_bid = m.get("yes_bid")
+        yes_ask = m.get("yes_ask_dollars")
+        yes_bid = m.get("yes_bid_dollars")
         if yes_ask is not None and yes_bid is not None:
-            market_price = (yes_ask + yes_bid) / 2 / 100  # convert cents → [0, 1]
+            ask, bid = float(yes_ask), float(yes_bid)
+            mid = (ask + bid) / 2
+            market_price = mid if mid > 0 else (ask if ask > 0 else None)
         else:
-            market_price = m.get("last_price", None)
+            last = m.get("last_price_dollars")
+            market_price = float(last) if last is not None else None
 
         rows.append({
             "contract_id":    m.get("ticker"),
