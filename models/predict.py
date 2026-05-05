@@ -20,6 +20,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+import joblib
 import pandas as pd
 import yaml
 
@@ -39,58 +40,62 @@ MODEL_PATH = Path("models/trained/xgb_v1.joblib")
 
 FEATURE_COLS = [
     "market_price", "volume_24h", "days_to_resolution",
-    "price_change_1h", "price_change_6h",
+    "btc_change_1h", "btc_change_6h",
+    "eth_change_1h", "eth_change_6h",
     "sentiment_score", "sentiment_confidence",
 ]
 
 
 def load_model():
-    import joblib 
-
-    if not MODEL_PATH().exists():
-        raise FileNotFoundError("Model not found at {MODEL_PATH}")
-
+    if not MODEL_PATH.exists():
+        raise FileNotFoundError(f"Model not found at {MODEL_PATH}")
     return joblib.load(MODEL_PATH)
 
 
 def predict() -> dict[str, PredictionSignal]:
-    import pandas as pd
-    import json
-
     model = load_model()
-    df = pd.read_parquet("data/live_features.parquet")
-    df = df[df["resolved_yes"].isna()]
 
-    with open("nlp/sentiment.json") as f:
-        sentiment = json.load(f)
-        sentiment_df = pd.DataFrame(sentiment).set_index("market_id")
+    df = pd.read_parquet(FEATURES_PATH)
+    # Live features have no resolved_yes — keep all rows
+    df = df[df["market_price"].notna()].copy()
 
-        df = df.join(sentiment_df[["sentiment_score", "sentiment_confidence"]], how="left")
+    if SENTIMENT_PATH.exists():
+        with open(SENTIMENT_PATH) as f:
+            raw = json.load(f)
+        sentiment_df = pd.DataFrame.from_dict(raw, orient="index")[
+            ["sentiment_score", "sentiment_confidence"]
+        ]
+        sentiment_df.index.name = "contract_id"
+        df = df.set_index("contract_id").join(sentiment_df, how="left").reset_index()
+    else:
+        df["sentiment_score"] = 0.0
+        df["sentiment_confidence"] = 0.0
 
     df[FEATURE_COLS] = df[FEATURE_COLS].fillna(0.0)
 
-    X = df[FEATURE_COLS]
+    X = df[FEATURE_COLS].values
     p_yes = model.predict_proba(X)[:, 1]
-
     confidence = abs(p_yes - 0.5) * 2
 
-    signals = {}
-    for i, row in enumerate(df.itertuples()):
-        signals[row.Index] = PredictionSignal(
-            market_id=row.Index,
-            p_yes=float(p_yes[i]),
+    now = datetime.now(timezone.utc)
+    signals: dict[str, PredictionSignal] = {}
+    for i, row in df.iterrows():
+        cid = row["contract_id"]
+        signals[cid] = PredictionSignal(
+            contract_id=cid,
+            timestamp=now,
+            p_model=float(p_yes[i]),
             confidence=float(confidence[i]),
         )
+
     save_predictions(signals)
     return signals
 
 
-
 def save_predictions(signals: dict[str, PredictionSignal]) -> None:
-    import json
-    
     payload = {cid: sig.model_dump(mode="json") for cid, sig in signals.items()}
-    json.dump(payload, open(PREDICTIONS_PATH, "w"), indent=2, default=str)
+    with open(PREDICTIONS_PATH, "w") as f:
+        json.dump(payload, f, indent=2, default=str)
 
 
 if __name__ == "__main__":

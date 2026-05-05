@@ -45,8 +45,10 @@ FEATURE_COLS = [
     "market_price",
     "volume_24h",
     "days_to_resolution",
-    "price_change_1h",
-    "price_change_6h",
+    "btc_change_1h",
+    "btc_change_6h",
+    "eth_change_1h",
+    "eth_change_6h",
     "sentiment_score",
     "sentiment_confidence",
 ]
@@ -122,8 +124,7 @@ def train(df: pd.DataFrame):
     base_model = xgb.XGBClassifier(n_estimators=200, max_depth=4, learning_rate=0.05)
     model = CalibratedClassifierCV(base_model, method="isotonic", cv=3)
     model.fit(X_train, y_train)
-    brier = evaluate(model, X_test, y_test)
-    print(f"Brier score: {brier:.4f}")
+    evaluate.evaluate_model(model, X_test, y_test, feature_names=FEATURE_COLS)
     return model, X_test, y_test
 
 

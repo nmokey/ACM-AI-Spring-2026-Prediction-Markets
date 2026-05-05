@@ -41,15 +41,11 @@ class OrderManager:
 
     @property
     def account_balance(self) -> float:
-        """
-        Return current account balance in dollars.
-
-        TODO (Week 5):
-            - In dry_run mode: return a hardcoded float (e.g. 100.0)
-            - In live mode: GET /portfolio/balance from Kalshi API
-              (balance is returned in cents — divide by 100)
-        """
-        raise NotImplementedError
+        """Return current account balance in dollars."""
+        if self.mode == "dry_run":
+            return 100.0
+        resp = self.kalshi._get("/portfolio/balance")
+        return resp["balance"] / 100
 
     def submit_order(
         self,
@@ -71,19 +67,44 @@ class OrderManager:
 
         Returns:
             TradeRecord if the order was placed or logged, None if skipped.
-
-        TODO (Week 5):
-            1. Compute the per-contract price:
-                   price = market_price if side == "YES" else (1 - market_price)
-            2. Compute n_contracts = int(bet_dollars / price) — skip if < 1
-            3. Skip if contract_id is already in self._open_positions
-            4. Build a TradeRecord (see data/features/schema.py)
-            5. If self.mode == "dry_run": call log_dry_run_trade(record)
-               If self.mode == "live":   call self.kalshi.place_order(...)
-            6. Add contract_id → bet_dollars to self._open_positions
-            7. Return the TradeRecord
         """
-        raise NotImplementedError
+        if contract_id in self._open_positions:
+            logger.debug("Skipping %s — already have open position", contract_id)
+            return None
+
+        price = market_price if side == "YES" else (1 - market_price)
+        if price <= 0:
+            return None
+        n_contracts = int(bet_dollars / price)
+        if n_contracts < 1:
+            return None
+
+        limit_price_cents = int(round(price * 100))
+        record = TradeRecord(
+            contract_id=contract_id,
+            timestamp=datetime.now(timezone.utc),
+            side=side,
+            size=n_contracts,
+            limit_price=limit_price_cents,
+            p_model=p_model,
+            market_price=market_price,
+            edge=abs(p_model - market_price),
+            mode=self.mode,
+        )
+
+        if self.mode == "dry_run":
+            log_dry_run_trade(record)
+        else:
+            self.kalshi.place_order(
+                ticker=contract_id,
+                side=side.lower(),
+                count=n_contracts,
+                limit_price=limit_price_cents,
+            )
+
+        self._open_positions[contract_id] = bet_dollars
+        logger.info("Order logged: %s %s x%d @ %dc", side, contract_id, n_contracts, limit_price_cents)
+        return record
 
     def clear_position(self, contract_id: str) -> None:
         """Remove a contract from open positions after it resolves."""
