@@ -3,9 +3,10 @@ data/engineer.py
 ─────────────────
 Feature engineering pipeline — Team 1 deliverable.
 
-Pulls live data from CryptoClient and KalshiClient, combines it into one
-row per open Kalshi contract, and writes data/features/live_features.parquet
-for Team 2 (Modeling & Intelligence) to consume in models/predict.py.
+Pulls live data from CryptoClient, KalshiClient, and WeatherClient, combines
+it into one row per open Kalshi contract, and writes
+data/features/live_features.parquet for Team 2 (Modeling & Intelligence)
+to consume in models/predict.py.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ import yaml
 
 from data.ingestion.crypto_client import CryptoClient
 from data.ingestion.kalshi_client import KalshiClient
+from data.ingestion.weather_client import WeatherClient
 
 logger = logging.getLogger(__name__)
 
@@ -30,57 +32,113 @@ FEATURES_PATH = ROOT / CONFIG["data"]["features_path"]
 FEATURES_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 CRYPTO_PAIRS = CONFIG["markets"]["crypto_pairs"]
+TARGET_CITIES = CONFIG["markets"]["target_cities"]
+
+
+def _fetch_crypto() -> dict[str, dict]:
+    """Return price-change dicts keyed by pair. Fills None on failure."""
+    crypto = CryptoClient()
+    result = {}
+    for pair in CRYPTO_PAIRS:
+        try:
+            result[pair] = crypto.compute_price_changes(pair)
+        except Exception:
+            logger.warning("Failed to fetch crypto data for %s", pair)
+            result[pair] = {"current_price": None, "price_change_1h": None, "price_change_6h": None}
+    return result
+
+
+def _fetch_weather() -> dict[str, float | None]:
+    """Return today's max precip probability (0–100) keyed by city. Fills None on failure."""
+    weather = WeatherClient()
+    result = {}
+    for city in TARGET_CITIES:
+        try:
+            result[city] = weather.get_todays_precip_prob(city)
+        except Exception:
+            logger.warning("Failed to fetch weather data for %s", city)
+            result[city] = None
+    return result
+
+
+def _market_price(m: dict) -> float | None:
+    """Compute mid price in [0, 1] from yes_ask/bid_dollars. Falls back to last_price."""
+    ask = m.get("yes_ask_dollars")
+    bid = m.get("yes_bid_dollars")
+    if ask is not None and bid is not None:
+        ask_f, bid_f = float(ask), float(bid)
+        mid = (ask_f + bid_f) / 2
+        if mid > 0:
+            return mid
+        if ask_f > 0:
+            return ask_f
+    last = m.get("last_price_dollars")
+    return float(last) if last is not None else None
+
+
+def _days_to_resolution(m: dict, now: datetime) -> float | None:
+    """Days from now until the market's expected expiration."""
+    close_str = m.get("expected_expiration_time") or m.get("close_time")
+    if not close_str:
+        return None
+    try:
+        close_dt = datetime.fromisoformat(close_str.replace("Z", "+00:00"))
+        return max((close_dt - now).total_seconds() / 86400, 0.0)
+    except ValueError:
+        return None
 
 
 def build_features() -> pd.DataFrame:
     """
-    Fetch live crypto and Kalshi data and return a feature DataFrame.
+    Fetch live data from all sources and return a feature DataFrame.
     One row per open Kalshi contract.
+
+    Columns (aligned with data/features/schema.py MarketFeatures):
+        contract_id, title, market_category,
+        market_price, volume_24h, open_interest,
+        days_to_resolution,
+        btc_price, btc_change_1h, btc_change_6h,
+        eth_price, eth_change_1h, eth_change_6h,
+        precip_prob_new_york, precip_prob_los_angeles, precip_prob_chicago,
+        fetched_at
     """
-    crypto = CryptoClient()
+    crypto_data = _fetch_crypto()
+    weather_data = _fetch_weather()
+
     kalshi = KalshiClient()
-
-    # Fetch price changes for each configured crypto pair
-    crypto_features: dict[str, dict] = {}
-    for pair in CRYPTO_PAIRS:
-        try:
-            crypto_features[pair] = crypto.compute_price_changes(pair)
-        except Exception:
-            logger.warning("Failed to fetch crypto data for %s", pair)
-            crypto_features[pair] = {"current_price": None, "price_change_1h": None, "price_change_6h": None}
-
-    # Flatten crypto features into individual columns
-    btc = crypto_features.get("BTC-USD", {})
-    eth = crypto_features.get("ETH-USD", {})
-
-    # Fetch open Kalshi markets
     markets = kalshi.get_markets(status="open")
 
-    fetched_at = datetime.now(timezone.utc).isoformat()
+    btc = crypto_data.get("BTC-USD", {})
+    eth = crypto_data.get("ETH-USD", {})
+
+    now = datetime.now(timezone.utc)
+    fetched_at = now.isoformat()
+
     rows = []
     for m in markets:
-        yes_ask = m.get("yes_ask_dollars")
-        yes_bid = m.get("yes_bid_dollars")
-        if yes_ask is not None and yes_bid is not None:
-            ask, bid = float(yes_ask), float(yes_bid)
-            mid = (ask + bid) / 2
-            market_price = mid if mid > 0 else (ask if ask > 0 else None)
-        else:
-            last = m.get("last_price_dollars")
-            market_price = float(last) if last is not None else None
-
         rows.append({
-            "contract_id":    m.get("ticker"),
-            "title":          m.get("title"),
-            "category":       m.get("category"),
-            "market_price":   market_price,
-            "btc_price":      btc.get("current_price"),
-            "btc_change_1h":  btc.get("price_change_1h"),
-            "btc_change_6h":  btc.get("price_change_6h"),
-            "eth_price":      eth.get("current_price"),
-            "eth_change_1h":  eth.get("price_change_1h"),
-            "eth_change_6h":  eth.get("price_change_6h"),
-            "fetched_at":     fetched_at,
+            # Identity
+            "contract_id":              m.get("ticker"),
+            "title":                    m.get("title"),
+            "market_category":          m.get("category"),
+            # Kalshi market features
+            "market_price":             _market_price(m),
+            "volume_24h":               float(m.get("volume_24h_fp") or 0),
+            "open_interest":            float(m.get("open_interest_fp") or 0),
+            "days_to_resolution":       _days_to_resolution(m, now),
+            # Crypto features
+            "btc_price":                btc.get("current_price"),
+            "btc_change_1h":            btc.get("price_change_1h"),
+            "btc_change_6h":            btc.get("price_change_6h"),
+            "eth_price":                eth.get("current_price"),
+            "eth_change_1h":            eth.get("price_change_1h"),
+            "eth_change_6h":            eth.get("price_change_6h"),
+            # Weather features
+            "precip_prob_new_york":     weather_data.get("New York"),
+            "precip_prob_los_angeles":  weather_data.get("Los Angeles"),
+            "precip_prob_chicago":      weather_data.get("Chicago"),
+            # Metadata
+            "fetched_at":               fetched_at,
         })
 
     return pd.DataFrame(rows)
@@ -97,4 +155,5 @@ if __name__ == "__main__":
     df = build_features()
     save_features(df)
     print(df.head())
+    print(f"\nNull counts:\n{df.isnull().sum()}")
     print(f"\nSaved {len(df)} contracts to {FEATURES_PATH}")
