@@ -15,6 +15,9 @@ cd ACM-AI-Spring-2026-Prediction-Markets
 pip install uv      # or: curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync             # installs all dependencies from pyproject.toml in ~30s
 
+# macOS only — required for XGBoost
+brew install libomp
+
 # 3. Set up your API keys
 cp .env.example .env
 # Edit .env and fill in KALSHI_API_KEY, KALSHI_API_SECRET, GNEWS_API_KEY
@@ -38,7 +41,7 @@ uv run python scripts/test_execution.py         # places 4 dummy dry-run orders
 │  ┌──────────┐    ┌─────────────┐        │
 │  │ Kalshi   │───▶│   Team 1    │        │
 │  │ NOAA     │    │  Data &     │        │
-│  │ Binance  │    │  Features   │        │
+│  │ Coinbase │    │  Features   │        │
 │  └──────────┘    └──────┬──────┘        │
 │                         │               │
 │  ┌──────────┐           │               │
@@ -89,38 +92,45 @@ prediction-markets/
 │
 ├── data/                   🗄️ TEAM 1 — Data & Features
 │   ├── ingestion/
-│   │   ├── kalshi_client.py  ✅  Kalshi REST API — auth, get_markets, get_market, get_orderbook, _get
-│   │   ├── weather_client.py ✅  NOAA — get_forecast, get_todays_precip_prob
-│   │   └── crypto_client.py  ⬜  Binance — get_price, get_24h_stats, get_klines (Week 2)
+│   │   ├── kalshi_client.py  ✅  Kalshi REST API — RSA-PSS auth, get_markets, get_market,
+│   │   │                         get_orderbook, get_resolved_markets, backfill_all_resolved
+│   │   ├── weather_client.py ✅  NOAA — get_forecast, get_todays_precip_prob (NY/LA/Chicago)
+│   │   └── crypto_client.py  ✅  Coinbase Advanced — get_price, get_24h_stats,
+│   │                             get_klines, compute_price_changes (BTC-USD, ETH-USD)
 │   ├── features/
 │   │   ├── schema.py         ✅  ⭐ SHARED — Pydantic data contracts (do not modify w/o PR)
-│   │   └── engineer.py       ⬜  Feature engineering pipeline → live_features.parquet (Week 3)
+│   │   └── engineer.py       ✅  Feature engineering pipeline → live_features.parquet
+│   │                             (17 columns: Kalshi + Coinbase + NOAA, refreshed every 15 min)
 │   └── store/                     (gitignored) SQLite DB, raw parquet files
 │
 ├── nlp/                    🧠 TEAM 2 — Modeling & Intelligence (NLP half)
 │   ├── news_client.py        ✅  GNews + GDELT fallback, SQLite store, _extract_query
 │   ├── relevance.py          ✅  Cosine similarity scorer (all-MiniLM-L6-v2)
-│   └── sentiment.py          ⬜  FinBERT / VADER sentiment scoring (Week 3)
+│   └── sentiment.py          ✅  FinBERT / VADER sentiment scoring, build_sentiment_signals,
+│                                 save_sentiment_signals → nlp/sentiment.json
 │
 ├── models/                 🧠 TEAM 2 — Modeling & Intelligence (Modeling half)
-│   ├── train.py              ⬜  XGBoost + isotonic calibration training (Week 4)
-│   ├── predict.py            ⬜  Live inference → signals/predictions.json (Week 5)
-│   ├── evaluate.py           ⬜  Brier score, calibration curve, feature importance (Week 4)
+│   ├── train.py              ✅  XGBoost + isotonic calibration, GroupShuffleSplit,
+│   │                             class-imbalance weighting, saves xgb_v1.joblib
+│   ├── predict.py            ✅  Live inference → signals/predictions.json
+│   ├── evaluate.py           ✅  Brier score, log-loss, calibration curve, feature importance
 │   └── trained/                   (gitignored) serialized model weights
 │
 ├── execution/              ⚡ TEAM 3 — Execution
 │   ├── kelly.py              ✅  Fractional Kelly Criterion position sizing
 │   ├── risk.py               ✅  Pre-trade risk checks (edge, confidence, exposure)
-│   ├── order_manager.py      ⬜  Order submission — the only gateway to Kalshi orders (Week 5)
+│   ├── order_manager.py      ✅  Order submission — the only gateway to Kalshi orders
+│   │                             (account_balance, submit_order, dry_run / live routing)
 │   ├── dry_run.py            ✅  Mock order logger → logs/dry_run_trades.csv
-│   └── trader.py             ⬜  Main trading loop (reads predictions → places orders) (Week 5)
+│   └── trader.py             ✅  Main trading loop (reads predictions → places orders)
 │
 ├── signals/                🔗 SHARED (read/write by Teams 2 & 3)
 │   └── predictions.json           Team 2 writes → Team 3 reads
 │
 ├── backtest/               📊 SHARED
-│   ├── engine.py                  Simulates full pipeline on historical resolved contracts
-│   └── metrics.py                 Sharpe, Sortino, win rate, max drawdown, Brier score
+│   ├── engine.py             🚧  Dummy mode working (from predictions.json + simulated outcomes)
+│   │                             Real model backtest (historical features + model) — Week 6
+│   └── metrics.py            ✅  Sharpe, Sortino, win rate, max drawdown, go/no-go verdict
 │
 ├── notebooks/              📓 SHARED (visualization only — not production code)
 │   ├── eda.ipynb                  Exploratory analysis of features
@@ -140,24 +150,75 @@ prediction-markets/
 └── pyproject.toml                 uv dependency manifest
 ```
 
+## Running the Pipeline
+
+### Step 1 — Refresh live features (Team 1)
+```bash
+uv run python -m data.engineer
+# Writes data/features/live_features.parquet — 200 open contracts, 17 feature columns
+```
+
+### Step 2 — Fetch headlines and score sentiment (Team 2 NLP)
+```bash
+uv run python -m nlp.sentiment
+# Reads live_features.parquet for contract titles, queries GNews/GDELT,
+# scores with VADER or FinBERT, writes nlp/sentiment.json
+```
+
+### Step 3 — Train or retrain the model (Team 2 Modeling)
+```bash
+uv run python -m models.train
+# Reads data/features/historical_features.parquet + nlp/sentiment.json
+# Trains XGBoost + isotonic calibration, writes models/trained/xgb_v1.joblib
+```
+
+### Step 4 — Run live inference (Team 2 Modeling)
+```bash
+uv run python -m models.predict
+# Reads live_features.parquet + sentiment.json + xgb_v1.joblib
+# Writes signals/predictions.json
+```
+
+### Step 5 — Start the trading bot (Team 3)
+```bash
+bash scripts/run_bot.sh
+# Reads predictions.json every 60 seconds, applies risk checks + Kelly sizing,
+# logs orders to logs/dry_run_trades.csv (or submits live when mode: "live")
+```
+
+For overnight runs on the club server:
+```bash
+nohup bash scripts/run_pipeline.sh > logs/pipeline.log 2>&1 &
+nohup bash scripts/run_bot.sh > logs/bot.log 2>&1 &
+```
+
 ## Data Contracts
 
-These are the interfaces **between** teams. Defined as Pydantic models in `data/features/schema.py`. Do not change that file without a team-wide PR — it is the plug-and-play contract that makes the pipeline modular.
+These are the interfaces **between** teams. Defined as Pydantic models in `data/features/schema.py`. Do not change that file without a team-wide PR.
 
 > **Note on NLP signals:** `nlp/` and `models/` are both owned by Team 2 (Modeling & Intelligence). Sentiment scores are an **internal Team 2 artifact** — they flow directly from `nlp/sentiment.py` into `models/predict.py` at runtime and are never written as a cross-team file. The only output Team 2 exposes externally is `signals/predictions.json`.
 
 ### `MarketFeatures` — Team 1 → Team 2 (`live_features.parquet`, refreshed every 15 min)
 
-| Field | Type | Constraints | Description |
-|---|---|---|---|
-| contract_id | `str` | | Kalshi market ticker e.g. `KXBTC-26APR21-T9000000` |
-| timestamp | `datetime` (UTC) | | Snapshot time |
-| market_price | `float` | [0.0, 1.0] | Normalized from Kalshi 0–100 cents |
-| volume_24h | `float` | ≥ 0 | Contracts traded in last 24h |
-| days_to_resolution | `float` | | Time until market closes |
-| price_change_1h | `float` | | Price delta vs. 1h ago |
-| price_change_6h | `float` | | Price delta vs. 6h ago |
-| market_category | `str` | `"weather"` / `"crypto"` / `"sports"` | Contract category |
+| Field | Type | Description |
+|---|---|---|
+| contract_id | `str` | Kalshi market ticker |
+| title | `str` | Human-readable contract title |
+| market_category | `str` or null | Contract category — null for MVE parlay contracts |
+| market_price | `float` [0, 1] | Mid of yes_ask/yes_bid in dollars; null if illiquid |
+| volume_24h | `float` | Contracts traded in last 24h |
+| open_interest | `float` | Total open contracts |
+| days_to_resolution | `float` | Days until expected expiration |
+| btc_price | `float` | Current BTC/USD spot price |
+| btc_change_1h | `float` | BTC 1h price change (e.g. 0.012 = +1.2%) |
+| btc_change_6h | `float` | BTC 6h price change |
+| eth_price | `float` | Current ETH/USD spot price |
+| eth_change_1h | `float` | ETH 1h price change |
+| eth_change_6h | `float` | ETH 6h price change |
+| precip_prob_new_york | `float` | Today's max precipitation probability 0–100 |
+| precip_prob_los_angeles | `float` | Today's max precipitation probability 0–100 |
+| precip_prob_chicago | `float` | Today's max precipitation probability 0–100 |
+| fetched_at | `str` | ISO 8601 UTC timestamp of snapshot |
 
 ### `PredictionSignal` — Team 2 → Team 3 (`signals/predictions.json`, refreshed every 15 min)
 
@@ -199,7 +260,7 @@ These are the interfaces **between** teams. Defined as Pydantic models in `data/
 | Brier Score | < 0.20 | Primary model quality metric. Random = 0.25 |
 | Sharpe Ratio | > 1.0 | Risk-adjusted return on backtest |
 | Win Rate | > 52% | % of trades that close profitably |
-| Edge per Trade | > 0.05 | Avg |p_model − market_price| on winning trades |
+| Edge per Trade | > 0.05 | Avg \|p_model − market_price\| on winning trades |
 | Dry-Run Trades | > 50 | Proof the system is running autonomously |
 
 **Week 6 go/no-go gate:** Sharpe > 1.0 AND win rate > 52% → flip to `mode: "live"` in `config/settings.yaml`.
@@ -216,33 +277,44 @@ trading:
   min_confidence: 0.60
 ```
 
-## Running the Pipeline
+## Known Data Limitations
 
-```bash
-# Start data + NLP refresh loop (runs on club server)
-bash scripts/run_pipeline.sh
+These are active issues that affect model quality. Understanding them is important before interpreting any backtest results or Brier scores.
 
-# Start model inference (run separately, or integrate into pipeline)
-uv run python -m models.predict
+### 1. Training data is all MVE parlay contracts
 
-# Start the trading bot
-bash scripts/run_bot.sh
-```
+Kalshi's `GET /markets?status=settled` only returns MVE (multi-variate event) parlay contracts — same-day sports parlays that resolve quickly. The 3,931 rows in `historical_features.parquet` are all of this type.
 
-For overnight runs:
-```bash
-nohup bash scripts/run_pipeline.sh > logs/pipeline.log 2>&1 &
-nohup bash scripts/run_bot.sh > logs/bot.log 2>&1 &
-```
+**Why this matters:** These are exotic multi-leg bets that are structurally different from the single-event weather, crypto, and sports markets we actually want to trade. A model trained on parlays won't generalize.
+
+**Mitigation:** Run `data.engineer` on a schedule to snapshot live features. When open contracts resolve, match them to their outcomes. After a week or two of collection, retrain on that data instead.
+
+### 2. Severe class imbalance in historical data
+
+Of 3,931 resolved contracts: 3,611 resolved NO (92%), 320 resolved YES (8%). This is expected — multi-leg parlays rarely hit all legs. `train.py` compensates with `scale_pos_weight=11.3`, but the model still has limited positive examples to learn from.
+
+### 3. `market_price` is zero for most historical rows
+
+75%+ of rows have `market_price = 0.0` because parlay contracts typically had no orderbook activity before resolving. This means the single most predictive feature is degenerate in the training set. The current trained model learns essentially: *zero market price → likely resolves NO*.
+
+**Brier score is misleadingly good (0.064)** because predicting NO on 92% NO data scores well even without real predictive signal. Check feature importances — `market_price` carries 100% of the weight, all others are zero.
+
+### 4. Kalshi does not return `market_category` for MVE contracts
+
+`market_category` is null for all 200 live contracts and all 3,931 historical contracts. Category-based filtering or features are not currently usable.
+
+### 5. Crypto features are null in historical data
+
+`btc_change_1h/6h` and `eth_change_1h/6h` are all null in the historical parquet (resolved markets don't have live Coinbase data attached). `train.py` fills these with `0.0`. They contribute no signal to the current model.
 
 ## External APIs
 
 | API | Owned by | Auth | Docs |
 |---|---|---|---|
-| Kalshi REST | Team 1, Team 3 | `KALSHI_API_KEY` Bearer token in `.env` | trading-api.kalshi.com/docs |
+| Kalshi REST | Team 1, Team 3 | RSA-PSS key pair in `.env` | trading-api.kalshi.com/docs |
 | NOAA Weather | Team 1 | None (free) | weather.gov/documentation |
-| Binance Public REST | Team 1 | None (free) | binance-docs.github.io |
-| GNews | Team 2 | API key in `.env` | gnews.io — request free academic access |
+| Coinbase Advanced | Team 1 | API key pair in `.env` (public endpoints used for candles) | docs.cloud.coinbase.com/advanced-trade-api |
+| GNews | Team 2 | API key in `.env` | gnews.io — request free academic access from UCLA email |
 | GDELT | Team 2 | None (free fallback) | gdeltproject.org |
 
 ## Project Links

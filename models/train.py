@@ -56,39 +56,38 @@ FEATURE_COLS = [
 TARGET_COL = "resolved_yes"  # 1 = contract resolved YES, 0 = resolved NO
 
 
-def load_data() -> pd.DataFrame:
+def load_data(features_path: Path | None = None) -> pd.DataFrame:
     """
     Load historical features and join sentiment signals.
 
-    The features parquet must include a `resolved_yes` column — this is added
-    by Team 1 during the historical backfill (Week 3 task).
+    The features parquet must include a `resolved_yes` column.
 
-    TODO (Week 4):
-        1. Check that FEATURES_PATH exists (raise FileNotFoundError if not)
-        2. pd.read_parquet(FEATURES_PATH)
-        3. Filter to rows where resolved_yes is not NaN (only resolved contracts)
-        4. If SENTIMENT_PATH exists, load it and join sentiment_score +
-           sentiment_confidence onto the dataframe by contract_id
-           If it doesn't exist, fill both columns with 0.0
-        5. Fill any remaining NaNs in FEATURE_COLS with 0.0
-        6. Return the cleaned dataframe
+    Args:
+        features_path: override the default path from settings.yaml.
+                       Pass data/features/historical_features.parquet for backfill data.
     """
-    if not FEATURES_PATH.exists():
-        raise FileNotFoundError(f"Features file not found: {FEATURES_PATH}")
-    
+    path = features_path or FEATURES_PATH
+    if not path.exists():
+        raise FileNotFoundError(f"Features file not found: {path}")
 
-    df = pd.read_parquet(FEATURES_PATH)
+    df = pd.read_parquet(path)
     df = df.dropna(subset=[TARGET_COL])
 
     if SENTIMENT_PATH.exists():
-        sentiment_df = pd.read_json(SENTIMENT_PATH)
-        df = df.merge(sentiment_df, on="contract_id", how="left")
+        with open(SENTIMENT_PATH) as f:
+            import json
+            raw = json.load(f)
+        sentiment_df = pd.DataFrame.from_dict(raw, orient="index")[
+            ["sentiment_score", "sentiment_confidence"]
+        ]
+        sentiment_df.index.name = "contract_id"
+        df = df.set_index("contract_id").join(sentiment_df, how="left").reset_index()
     else:
         df["sentiment_score"] = 0.0
         df["sentiment_confidence"] = 0.0
 
     df[FEATURE_COLS] = df[FEATURE_COLS].fillna(0.0)
-
+    logger.info("Loaded %d labeled rows from %s", len(df), path)
     return df
 
 
@@ -115,13 +114,24 @@ def train(df: pd.DataFrame):
     """
     X = df[FEATURE_COLS].values
     y = df[TARGET_COL].astype(int).values
-    
-    splitter = GroupShuffleSplit(n_splits = 1, test_size = 0.2)
+
+    # Handle class imbalance: weight the minority class proportionally
+    n_neg = (y == 0).sum()
+    n_pos = (y == 1).sum()
+    scale_pos_weight = n_neg / n_pos if n_pos > 0 else 1.0
+    logger.info("Class balance: %d NO / %d YES — scale_pos_weight=%.1f", n_neg, n_pos, scale_pos_weight)
+
+    splitter = GroupShuffleSplit(n_splits=1, test_size=0.2)
     train_idx, test_index = next(splitter.split(X, y, groups=df["contract_id"]))
     X_train, X_test = X[train_idx], X[test_index]
     y_train, y_test = y[train_idx], y[test_index]
 
-    base_model = xgb.XGBClassifier(n_estimators=200, max_depth=4, learning_rate=0.05)
+    base_model = xgb.XGBClassifier(
+        n_estimators=200,
+        max_depth=4,
+        learning_rate=0.05,
+        scale_pos_weight=scale_pos_weight,
+    )
     model = CalibratedClassifierCV(base_model, method="isotonic", cv=3)
     model.fit(X_train, y_train)
     evaluate.evaluate_model(model, X_test, y_test, feature_names=FEATURE_COLS)
@@ -140,6 +150,6 @@ def save_model(model) -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    df = load_data()
+    df = load_data(Path("data/features/historical_features.parquet"))
     model, X_test, y_test = train(df)
     save_model(model)
