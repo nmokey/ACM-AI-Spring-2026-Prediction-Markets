@@ -192,7 +192,7 @@ nohup bash scripts/run_bot.sh > logs/bot.log 2>&1 &
 
 ## Data Contracts
 
-These are the interfaces **between** teams. Defined as Pydantic models in `data/features/schema.py`. Do not change that file without a team-wide PR.
+These are the interfaces **between** teams. Defined as Pydantic models in `data/schema.py`. Do not change that file without a team-wide PR.
 
 > **Note on NLP signals:** `nlp/` and `models/` are both owned by Team 2 (Modeling & Intelligence). Sentiment scores are an **internal Team 2 artifact** — they flow directly from `nlp/sentiment.py` into `models/predict.py` at runtime and are never written as a cross-team file. The only output Team 2 exposes externally is `signals/predictions.json`.
 
