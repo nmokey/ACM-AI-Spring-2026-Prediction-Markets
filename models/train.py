@@ -84,11 +84,15 @@ def load_data(features_path: Path | None = None) -> pd.DataFrame:
             ["sentiment_score", "sentiment_confidence"]
         ]
         sentiment_df.index.name = "contract_id"
+        df = df.drop(columns=["sentiment_score", "sentiment_confidence"], errors="ignore")
         df = df.set_index("contract_id").join(sentiment_df, how="left").reset_index()
     else:
         df["sentiment_score"] = 0.0
         df["sentiment_confidence"] = 0.0
 
+    for col in FEATURE_COLS:
+        if col not in df.columns:
+            df[col] = 0.0
     df[FEATURE_COLS] = df[FEATURE_COLS].fillna(0.0)
     logger.info("Loaded %d labeled rows from %s", len(df), path)
     return df

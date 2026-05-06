@@ -32,7 +32,7 @@ from typing import Any
 
 import yaml
 
-from data.features.schema import SentimentSignal
+from data.schema import SentimentSignal
 from nlp.news_client import NewsClient
 from nlp.relevance import score_relevance
 

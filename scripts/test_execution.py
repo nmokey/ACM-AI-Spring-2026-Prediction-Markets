@@ -21,7 +21,7 @@ from pathlib import Path
 # Allow running from repo root
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
-from data.features.schema import PredictionSignal, TradeRecord
+from data.schema import PredictionSignal, TradeRecord
 from execution.kelly import kelly_fraction, dollars_to_contracts
 from execution.risk import check_trade, RiskCheckResult
 from execution.dry_run import log_dry_run_trade

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import yaml
 
-from data.features.schema import TradeRecord
+from data.schema import TradeRecord
 
 logger = logging.getLogger(__name__)
 

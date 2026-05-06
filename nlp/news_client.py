@@ -95,6 +95,9 @@ class NewsClient:
         }
 
         resp = self.session.get(f"{GNEWS_BASE}/search", params=params, timeout=10)
+        if resp.status_code == 429:
+            logger.warning("GNews rate limited — falling back to GDELT for query: %r", query)
+            return self._fetch_gdelt(query, max_results)
         resp.raise_for_status()
 
         headlines = []

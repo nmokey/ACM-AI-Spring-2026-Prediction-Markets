@@ -17,7 +17,7 @@ from pathlib import Path
 
 import yaml
 
-from data.features.schema import TradeRecord
+from data.schema import TradeRecord
 from data.ingestion.kalshi_client import KalshiClient
 from execution.dry_run import log_dry_run_trade
 

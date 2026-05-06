@@ -89,17 +89,17 @@ Status legend: ✅ done · 🚧 in progress · ⬜ not started
 prediction-markets/
 │
 ├── data/                   🗄️ TEAM 1 — Data & Features
+│   ├── schema.py             ✅  ⭐ SHARED — Pydantic data contracts (do not modify w/o PR)
 │   ├── ingestion/
 │   │   ├── kalshi_client.py  ✅  Kalshi REST API — RSA-PSS auth, get_markets, get_market,
 │   │   │                         get_orderbook, get_resolved_markets, backfill_all_resolved
 │   │   ├── weather_client.py ✅  NOAA — get_forecast, get_todays_precip_prob (NY/LA/Chicago)
 │   │   └── crypto_client.py  ✅  Coinbase Advanced — get_price, get_24h_stats,
 │   │                             get_klines, compute_price_changes (BTC-USD, ETH-USD)
-│   ├── features/
-│   │   ├── schema.py         ✅  ⭐ SHARED — Pydantic data contracts (do not modify w/o PR)
+│   ├── features/             (gitignored) parquet artifacts — re-generate with data.engineer
 │   │   └── engineer.py       ✅  Feature engineering pipeline → live_features.parquet
 │   │                             (17 columns: Kalshi + Coinbase + NOAA, refreshed every 15 min)
-│   └── store/                     (gitignored) SQLite DB, raw parquet files
+│   └── store/                (gitignored) SQLite headlines DB
 │
 ├── nlp/                    🧠 TEAM 2 — Modeling & Intelligence (NLP half)
 │   ├── news_client.py        ✅  GNews + GDELT fallback, SQLite store, _extract_query

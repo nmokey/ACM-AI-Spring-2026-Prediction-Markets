@@ -24,7 +24,7 @@ import joblib
 import pandas as pd
 import yaml
 
-from data.features.schema import PredictionSignal
+from data.schema import PredictionSignal
 
 logger = logging.getLogger(__name__)
 
