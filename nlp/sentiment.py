@@ -45,29 +45,60 @@ SENTIMENT_PATH = Path(CONFIG["data"]["sentiment_path"])
 SENTIMENT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
-def score_text(text: str, use_finbert: bool = True) -> tuple[float, float]:
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+from transformers import pipeline as hf_pipeline
+
+# Load once at module level — not inside the function
+_vader = SentimentIntensityAnalyzer()
+_finbert = None  # Lazy-load on first use to avoid startup cost if not needed
+
+def _get_finbert():
+    global _finbert
+    if _finbert is None:
+        _finbert = hf_pipeline(
+            "text-classification",
+            model="ProsusAI/finbert",
+            top_k=None,
+            device=-1  # CPU; set to 0 if you have a GPU
+        )
+    return _finbert
+
+def score_text(
+    text: str,
+    use_finbert: bool = True,
+    finbert_weight: float = 0.7,
+) -> tuple[float, float]:
     """
-    Score a single piece of text for sentiment.
+    Score a piece of text for sentiment using VADER, FinBERT, or an ensemble.
 
     Returns:
         (sentiment_score, confidence)
-        score in [-1, 1]:  positive → bullish/favorable, negative → bearish/unfavorable
-        confidence in [0, 1]
+        sentiment_score in [-1, 1]: positive → bullish/favorable
+        confidence in [0, 1]: how non-neutral the signal is
     """
-    if use_finbert:
-        from transformers import pipeline
-        pipe = pipeline("text-classification", model="ProsusAI/finbert", top_k=None)
-        result = pipe(text[:512])[0]  # list of {label, score}
-        scores = {r["label"]: r["score"] for r in result}
-        score = scores.get("positive", 0.0) - scores.get("negative", 0.0)
-        confidence = 1 - scores.get("neutral", 0.0)
-    else:
-        from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-        analyzer = SentimentIntensityAnalyzer()
-        scores = analyzer.polarity_scores(text)
-        score = scores["compound"]
-        confidence = abs(scores["compound"])
-    return score, confidence
+    text = text.strip()
+    if not text:
+        return 0.0, 0.0
+
+    vader_scores = _vader.polarity_scores(text[:1000])
+    vader_score = vader_scores["compound"]  
+    vader_confidence = abs(vader_score)
+
+    if not use_finbert:
+        return vader_score, vader_confidence
+
+    finbert = _get_finbert()
+    result = finbert(text[:512])[0]  
+    fb = {r["label"]: r["score"] for r in result}
+
+    finbert_score = fb.get("positive", 0.0) - fb.get("negative", 0.0)
+    finbert_confidence = 1.0 - fb.get("neutral", 0.0)  
+
+    vader_weight = 1.0 - finbert_weight
+    score = finbert_weight * finbert_score + vader_weight * vader_score
+    confidence = finbert_weight * finbert_confidence + vader_weight * vader_confidence
+
+    return float(score), float(confidence)
 
 
 def build_sentiment_signals(
