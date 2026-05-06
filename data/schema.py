@@ -9,7 +9,7 @@ DO NOT modify without a team-wide PR — this is the cross-team interface.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Literal  # used by TradeRecord
 
 from pydantic import BaseModel, Field
 
@@ -17,13 +17,22 @@ from pydantic import BaseModel, Field
 class MarketFeatures(BaseModel):
     """Team 1 → Team 2: one row of live_features.parquet."""
     contract_id: str
-    timestamp: datetime
-    market_price: float = Field(ge=0.0, le=1.0)
+    title: str
+    market_category: str | None
+    market_price: float | None = Field(default=None, ge=0.0, le=1.0)
     volume_24h: float = Field(ge=0.0)
-    days_to_resolution: float
-    price_change_1h: float
-    price_change_6h: float
-    market_category: Literal["weather", "crypto", "sports"]
+    open_interest: float = Field(ge=0.0)
+    days_to_resolution: float | None
+    btc_price: float | None = None
+    btc_change_1h: float | None = None
+    btc_change_6h: float | None = None
+    eth_price: float | None = None
+    eth_change_1h: float | None = None
+    eth_change_6h: float | None = None
+    precip_prob_new_york: float | None = None
+    precip_prob_los_angeles: float | None = None
+    precip_prob_chicago: float | None = None
+    fetched_at: str
 
 
 class SentimentSignal(BaseModel):
