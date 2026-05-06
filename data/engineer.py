@@ -120,7 +120,7 @@ def build_features() -> pd.DataFrame:
             # Identity
             "contract_id":              m.get("ticker"),
             "title":                    m.get("title"),
-            "market_category":          m.get("category"),
+            "market_category":          m.get("category", "unknown").lower().strip(),
             # Kalshi market features
             "market_price":             _market_price(m),
             "volume_24h":               float(m.get("volume_24h_fp") or 0),
