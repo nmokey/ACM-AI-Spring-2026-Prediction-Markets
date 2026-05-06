@@ -22,14 +22,17 @@ while true; do
     now=$(date +%s)
 
     echo "[pipeline] $(date -u '+%Y-%m-%d %H:%M:%S UTC') — refreshing features..."
-    python -m data.features.engineer || echo "[pipeline] Feature refresh failed — continuing"
+    uv run python -m data.engineer || echo "[pipeline] Feature refresh failed — continuing"
 
     # Refresh sentiment every SENTIMENT_INTERVAL
     if (( now - last_sentiment >= SENTIMENT_INTERVAL )); then
         echo "[pipeline] $(date -u '+%Y-%m-%d %H:%M:%S UTC') — refreshing NLP sentiment..."
-        python -m nlp.sentiment || echo "[pipeline] Sentiment refresh failed — continuing"
+        uv run python -m nlp.sentiment || echo "[pipeline] Sentiment refresh failed — continuing"
         last_sentiment=$now
     fi
+
+    echo "[pipeline] $(date -u '+%Y-%m-%d %H:%M:%S UTC') — running inference..."
+    uv run python -m models.predict || echo "[pipeline] Inference failed — continuing"
 
     echo "[pipeline] Sleeping ${FEATURE_INTERVAL}s..."
     sleep $FEATURE_INTERVAL

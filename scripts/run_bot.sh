@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-MODE=$(python -c "import yaml; print(yaml.safe_load(open('config/settings.yaml'))['trading']['mode'])")
+MODE=$(uv run python -c "import yaml; print(yaml.safe_load(open('config/settings.yaml'))['trading']['mode'])")
 echo "[bot] Starting trader in ${MODE^^} mode"
 
 if [ "$MODE" = "live" ]; then
@@ -21,4 +21,4 @@ if [ "$MODE" = "live" ]; then
     fi
 fi
 
-python -m execution.trader
+uv run python -m execution.trader

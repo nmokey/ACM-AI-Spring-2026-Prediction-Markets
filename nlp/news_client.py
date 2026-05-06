@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import sqlite3
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -217,15 +218,16 @@ class NewsClient:
             - Return total new headlines stored
         """
         total_stored = 0
-        
+
         for title in contract_titles:
             query = _extract_query(title)
             logger.info(f"Polling contract: {title!r} → query: {query!r}")
-            
+
             headlines = self.fetch_headlines(query)
             stored = self.store_headlines(headlines)
             total_stored += stored
-        
+            time.sleep(sleep_between_calls)
+
         return total_stored
 
 

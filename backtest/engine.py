@@ -57,12 +57,12 @@ def _load_dummy_trades(
     trade_log = []
     open_positions: dict[str, float] = {}
 
-    for entry in raw.values():
+    for contract_id, entry in raw.items():
         p_model: float = entry["p_model"]
         confidence: float = entry["confidence"]
 
         if confidence < TRADING_CFG["min_confidence"]:
-            logger.debug("Skipping %s — confidence too low", entry["contract_id"])
+            logger.debug("Skipping %s — confidence too low", contract_id)
             continue
 
         # Synthetic market price: offset p_model by a random amount so we have edge
@@ -71,12 +71,12 @@ def _load_dummy_trades(
 
         edge = abs(p_model - market_price)
         if edge < TRADING_CFG["min_edge"]:
-            logger.debug("Skipping %s — edge %.3f below min", entry["contract_id"], edge)
+            logger.debug("Skipping %s — edge %.3f below min", contract_id, edge)
             continue
 
         total_exposure = sum(open_positions.values())
         if total_exposure >= TRADING_CFG["max_total_exposure_pct"] * balance:
-            logger.debug("Skipping %s — exposure cap reached", entry["contract_id"])
+            logger.debug("Skipping %s — exposure cap reached", contract_id)
             continue
 
         bet_dollars, side = kelly_fraction(
@@ -95,7 +95,7 @@ def _load_dummy_trades(
             continue
 
         cost = n_contracts * price
-        open_positions[entry["contract_id"]] = cost
+        open_positions[contract_id] = cost
 
         # Simulate resolution: Bernoulli(p_model) — perfectly calibrated model
         resolved_yes = int(rng.random() < p_model)
@@ -106,11 +106,11 @@ def _load_dummy_trades(
         balance += pnl
         cumulative_pnl += pnl
 
-        del open_positions[entry["contract_id"]]
+        del open_positions[contract_id]
 
         trade_log.append(
             {
-                "contract_id": entry["contract_id"],
+                "contract_id": contract_id,
                 "timestamp": entry["timestamp"],
                 "p_model": p_model,
                 "market_price": market_price,

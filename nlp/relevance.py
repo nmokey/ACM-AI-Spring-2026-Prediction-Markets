@@ -47,8 +47,7 @@ def score_relevance(
     Args:
         contract_title: e.g. "Will BTC close above $90k on April 20?"
         headlines:      list of dicts, each with at least {"id": str, "text": str}
-        top_k:          max headlines to retu
-        rn
+        top_k:          max headlines to return
         min_score:      minimum cosine similarity to include (0.0–1.0)
 
     Returns:

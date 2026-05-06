@@ -58,7 +58,7 @@ def predict() -> dict[str, PredictionSignal]:
 
     df = pd.read_parquet(FEATURES_PATH)
     # Live features have no resolved_yes — keep all rows
-    df = df[df["market_price"].notna()].copy()
+    df = df[df["market_price"].notna()].reset_index(drop=True)
 
     if SENTIMENT_PATH.exists():
         with open(SENTIMENT_PATH) as f:
@@ -80,8 +80,8 @@ def predict() -> dict[str, PredictionSignal]:
 
     now = datetime.now(timezone.utc)
     signals: dict[str, PredictionSignal] = {}
-    for i, row in df.iterrows():
-        cid = row["contract_id"]
+    for i, row in enumerate(df.itertuples(index=False)):
+        cid = row.contract_id
         signals[cid] = PredictionSignal(
             contract_id=cid,
             timestamp=now,
