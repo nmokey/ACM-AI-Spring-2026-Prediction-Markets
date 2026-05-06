@@ -14,9 +14,7 @@ cd ACM-AI-Spring-2026-Prediction-Markets
 # 2. Set up your environment (requires Python 3.11+)
 pip install uv      # or: curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync             # installs all dependencies from pyproject.toml in ~30s
-
-# macOS only — required for XGBoost
-brew install libomp
+brew install libomp # macOS only — required for XGBoost (see pyproject.toml)
 
 # 3. Set up your API keys
 cp .env.example .env

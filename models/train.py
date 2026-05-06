@@ -49,6 +49,9 @@ FEATURE_COLS = [
     "btc_change_6h",
     "eth_change_1h",
     "eth_change_6h",
+    "precip_prob_new_york",
+    "precip_prob_los_angeles",
+    "precip_prob_chicago",
     "sentiment_score",
     "sentiment_confidence",
 ]
