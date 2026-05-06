@@ -90,8 +90,8 @@ class CryptoClient:
         end_time = int(time.time())
         start_time = end_time - (limit * 3600 *1.5)
 
-        resp = self.client.get_candles(
-            product_id=symbol, 
+        resp = self.client.get_public_candles(
+            product_id=symbol,
             granularity=interval,
             start=str(int(start_time)),
             end=str(int(end_time))
