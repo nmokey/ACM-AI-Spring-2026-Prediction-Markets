@@ -31,7 +31,7 @@ BASE_URL = os.getenv("KALSHI_BASE_URL", "https://trading-api.kalshi.com/trade-ap
 class KalshiClient:
 
     def __init__(self) -> None:
-        self.api_key = os.getenv("KALSHI_API_KEY", "")
+        self.api_key = os.getenv("KALSHI_API_ID", "") or os.getenv("KALSHI_API_KEY", "")
         raw_secret = os.getenv("KALSHI_API_SECRET", "")
         # Reconstruct PEM if the .env collapsed newlines.
         # MIIEpA prefix = PKCS#1 RSA key; MIIEvA/MIIEv = PKCS#8.
@@ -73,28 +73,45 @@ class KalshiClient:
         self,
         status: str = "open",
         category: str | None = None,
-        limit: int = 200,
+        series_ticker: str | None = None,
+        limit_per_page: int = 100,
+        max_pages: int = 20,
     ) -> list[dict[str, Any]]:
         """
-        Fetch a list of markets from Kalshi.
+        Fetch markets from Kalshi with cursor pagination.
 
         Args:
-            status:   filter by market status — "open", "closed", or "settled"
-            category: optional category tag (e.g. "weather", "crypto", "sports")
-            limit:    max results per page
+            status:         filter by market status — "open", "closed", or "settled"
+            category:       optional category tag (e.g. "weather", "crypto", "sports")
+            series_ticker:  optional Kalshi series ticker to fetch a specific series
+            limit_per_page: max results per page (Kalshi caps at 100)
+            max_pages:      safety cap on total pages fetched
 
         Returns:
-            List of raw market dicts from the Kalshi API.
-
-        TODO (Week 2):
-            - Build the params dict and call self._get("/markets", params=...)
-            - Return the "markets" key from the response
-            - Check the Kalshi docs for the exact query parameter names
+            Flat list of all market dicts across all pages.
         """
-        params: dict[str, Any] = {"status": status, "limit": limit}
-        if category is not None:
-            params["category"] = category
-        return self._get("/markets", params=params)["markets"]
+        all_markets: list[dict[str, Any]] = []
+        cursor: str | None = None
+
+        for _ in range(max_pages):
+            params: dict[str, Any] = {"status": status, "limit": limit_per_page}
+            if category is not None:
+                params["category"] = category
+            if series_ticker is not None:
+                params["series_ticker"] = series_ticker
+            if cursor is not None:
+                params["cursor"] = cursor
+
+            resp = self._get("/markets", params=params)
+            page = resp.get("markets", [])
+            all_markets.extend(page)
+
+            cursor = resp.get("cursor") or None
+            if not cursor or not page:
+                break
+            time.sleep(0.25)
+
+        return all_markets
 
     def get_market(self, ticker: str) -> dict[str, Any]:
         """
@@ -216,7 +233,7 @@ class KalshiClient:
 
 if __name__ == "__main__":
     client = KalshiClient()
-    markets = client.get_markets(limit=5)
+    markets = client.get_markets(limit_per_page=5, max_pages=1)
     print(f"Fetched {len(markets)} markets:")
     for m in markets:
         print(f"  {m.get('ticker')} — {m.get('title')}")

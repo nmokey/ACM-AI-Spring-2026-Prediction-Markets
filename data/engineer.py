@@ -34,6 +34,39 @@ FEATURES_PATH.parent.mkdir(parents=True, exist_ok=True)
 CRYPTO_PAIRS = CONFIG["markets"]["crypto_pairs"]
 TARGET_CITIES = CONFIG["markets"]["target_cities"]
 
+WEATHER_SERIES = [
+    "KXHIGHLAX", "KXHIGHCHI", "KXHIGHNY", "KXHIGHDEN", "KXHIGHMIA",
+    "KXHIGHDAL", "KXHIGHBOS", "KXHIGHAUS", "KXHIGHOU",
+    "KXHIGHTSFO", "KXHIGHTSEA", "KXHIGHTPHX", "KXHIGHTDC",
+    "KXLOWTLAX", "KXLOWTCHI", "KXLOWTNYC", "KXLOWTDEN",
+    "KXLOWTHOU", "KXLOWTDFW", "KXLOWTSFO", "KXLOWTSEA",
+]
+
+CRYPTO_SERIES = [
+    "KXBTCD", "KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M",
+    "KXDOGE15M", "KXDOGE", "KXADA15M", "KXAVAX15M", "KXLINK15M",
+    "KXBNB15M", "KXEURUSD", "KXUSDJPY", "KXGBPUSD",
+]
+
+SPORTS_SERIES = [
+    "KXNBA", "KXNHL", "KXMLB", "KXF1",
+    "KXNBACHMP", "KXNHLCHMP", "KXMLBHRR", "KXNCAAMB",
+]
+
+ECONOMICS_SERIES = [
+    "KXCPI", "KXNFP", "KXADP", "KXUNRATE", "KXPPI", "KXPCE",
+    "KXJOBLESS", "KXICSA", "KXISM", "KXISMMFG", "KXISMSVC", "KXGDP",
+    "KXFED", "KXFFR", "KXDGS10", "KXDGS2",
+]
+
+EQUITY_SERIES = [
+    "KXSPX", "KXSPXD", "KXNDX", "KXINXD", "KXDOW",
+]
+
+ENERGY_SERIES = [
+    "KXWTI", "KXOIL", "KXNATGAS", "KXNG",
+]
+
 
 def _fetch_crypto() -> dict[str, dict]:
     """Return price-change dicts keyed by pair. Fills None on failure."""
@@ -88,6 +121,38 @@ def _days_to_resolution(m: dict, now: datetime) -> float | None:
         return None
 
 
+def _fetch_markets_by_series(kalshi: KalshiClient) -> list[dict]:
+    """Fetch markets per series group, tag market_category, deduplicate by ticker."""
+    seen: set[str] = set()
+    all_markets: list[dict] = []
+
+    groups = [
+        ("weather",    WEATHER_SERIES),
+        ("crypto",     CRYPTO_SERIES),
+        ("sports",     SPORTS_SERIES),
+        ("economics",  ECONOMICS_SERIES),
+        ("equity",     EQUITY_SERIES),
+        ("energy",     ENERGY_SERIES),
+    ]
+
+    for category_tag, series_list in groups:
+        for series in series_list:
+            try:
+                page = kalshi.get_markets(status="open", series_ticker=series)
+            except Exception as e:
+                logger.warning("Failed to fetch series %s: %s", series, e)
+                continue
+            for m in page:
+                ticker = m.get("ticker", "")
+                if ticker and ticker not in seen:
+                    seen.add(ticker)
+                    m["_category_tag"] = category_tag
+                    all_markets.append(m)
+
+    logger.info("Fetched %d unique markets across all series", len(all_markets))
+    return all_markets
+
+
 def build_features() -> pd.DataFrame:
     """
     Fetch live data from all sources and return a feature DataFrame.
@@ -106,7 +171,7 @@ def build_features() -> pd.DataFrame:
     weather_data = _fetch_weather()
 
     kalshi = KalshiClient()
-    markets = kalshi.get_markets(status="open")
+    markets = _fetch_markets_by_series(kalshi)
 
     btc = crypto_data.get("BTC-USD", {})
     eth = crypto_data.get("ETH-USD", {})
@@ -120,7 +185,7 @@ def build_features() -> pd.DataFrame:
             # Identity
             "contract_id":              m.get("ticker"),
             "title":                    m.get("title"),
-            "market_category":          m.get("category", "unknown").lower().strip(),
+            "market_category":          m.get("_category_tag") or m.get("category"),
             # Kalshi market features
             "market_price":             _market_price(m),
             "volume_24h":               float(m.get("volume_24h_fp") or 0),
@@ -134,9 +199,9 @@ def build_features() -> pd.DataFrame:
             "eth_change_1h":            eth.get("price_change_1h"),
             "eth_change_6h":            eth.get("price_change_6h"),
             # Weather features
-            "precip_prob_new_york":     weather_data.get("New York"),
-            "precip_prob_los_angeles":  weather_data.get("Los Angeles"),
-            "precip_prob_chicago":      weather_data.get("Chicago"),
+            "precip_prob_new_york":     float(weather_data["New York"]) if weather_data.get("New York") is not None else None,
+            "precip_prob_los_angeles":  float(weather_data["Los Angeles"]) if weather_data.get("Los Angeles") is not None else None,
+            "precip_prob_chicago":      float(weather_data["Chicago"]) if weather_data.get("Chicago") is not None else None,
             # Metadata
             "fetched_at":               fetched_at,
         })
