@@ -96,8 +96,8 @@ class NewsClient:
         }
 
         resp = self.session.get(f"{GNEWS_BASE}/search", params=params, timeout=10)
-        if resp.status_code == 429:
-            logger.warning("GNews rate limited — falling back to GDELT for query: %r", query)
+        if resp.status_code in (403, 429):
+            logger.warning("GNews %d — falling back to GDELT for query: %r", resp.status_code, query)
             return self._fetch_gdelt(query, max_results)
         resp.raise_for_status()
 
@@ -233,41 +233,87 @@ class NewsClient:
 
 def _extract_query(contract_title: str) -> str:
     """
-    Extract a short, clean search query from a Kalshi contract title.
-
-    E.g. "Will BTC close above $100k on April 20?" → "bitcoin price"
-         "Will it rain in New York today?"          → "weather forecast New York"
-
-    TODO (Week 2): write simple keyword heuristics for crypto, weather, and sports.
-    For Week 3, consider using NER or embeddings for smarter extraction.
+    Extract a short, newsworthy search query from a Kalshi contract title.
+    Returns a topic-level query (no numbers, dates, or thresholds) so that
+    multiple contracts on the same underlying map to the same API call.
     """
-    t = contract_title.strip().rstrip("?.!")
-    low = t.lower()
+    low = contract_title.lower()
 
-    crypto_map = {
-        r"\bbtc\b|\bbitcoin\b": "bitcoin price",
-        r"\beth\b|\bether(eum)?\b": "ethereum price",
-        r"\bsol\b|\bsolana\b": "solana price",
+    # Crypto
+    if re.search(r"\bbitcoin\b|\bbtc\b", low):
+        return "bitcoin price"
+    if re.search(r"\bethereum\b|\beth\b", low):
+        return "ethereum price"
+    if re.search(r"\bsolana\b|\bsol\b", low):
+        return "solana price"
+    if re.search(r"\bdogecoin\b|\bdoge\b", low):
+        return "dogecoin price"
+    if re.search(r"\bbnb\b", low):
+        return "BNB crypto price"
+    if re.search(r"\bxrp\b|\bripple\b", low):
+        return "XRP crypto price"
+
+    # Macro / economic
+    if re.search(r"\bfederal funds\b|\bfed\b.*\brate\b|\bfomc\b", low):
+        return "Federal Reserve interest rate decision"
+    if re.search(r"\bcpi\b|\bconsumer price index\b|\binflation\b", low):
+        return "US inflation CPI"
+    if re.search(r"\bgdp\b|\bgross domestic product\b", low):
+        return "US GDP growth"
+    if re.search(r"\badp\b|\bemployment change\b|\bjobs\b", low):
+        return "US employment jobs report"
+    if re.search(r"\bwti\b|\bcrude oil\b|\boil price\b", low):
+        return "WTI crude oil price"
+    if re.search(r"\beur.*usd\b|\beurusd\b", low):
+        return "EUR USD exchange rate"
+    if re.search(r"\busd.*jpy\b|\busdjpy\b", low):
+        return "USD JPY exchange rate"
+
+    # Weather — map city abbreviations to full names
+    city_map = {
+        r"\bla\b|\blos angeles\b|\blax\b": "Los Angeles",
+        r"\bnyc\b|\bnew york\b|\bny\b": "New York",
+        r"\bchi\b|\bchicago\b": "Chicago",
+        r"\bmiami\b|\bmia\b": "Miami",
+        r"\bdenver\b|\bden\b": "Denver",
+        r"\baustin\b|\baus\b": "Austin",
+        r"\bseattle\b|\bsea\b": "Seattle",
+        r"\bsan francisco\b|\bsfo\b": "San Francisco",
+        r"\bphoenix\b|\bphx\b": "Phoenix",
+        r"\bhouston\b|\bhou\b": "Houston",
+        r"\bwashington\b|\bdc\b|\btdc\b": "Washington DC",
     }
-    for pat, q in crypto_map.items():
-        if re.search(pat, low):
-            return q
+    if re.search(r"\bhigh temp\b|\blow temp\b|\bmaximum temp\b|\bminimum temp\b"
+                 r"|\btemperature\b|\brain\b|\bsnow\b|\bprecip\b|\bweather\b", low):
+        for pat, city in city_map.items():
+            if re.search(pat, low):
+                return f"{city} weather forecast"
+        return "weather forecast"
 
-    weather_terms = ["rain", "snow", "storm", "hurricane", "temperature", "weather"]
-    hit = next((w for w in weather_terms if w in low), None)
-    if hit:
-        loc_match = re.search(r"\bin ([A-Z][A-Za-z]*(?: [A-Z][A-Za-z]*)*)", t)
-        loc = loc_match.group(1) if loc_match else ""
-        return f"{hit} {loc}".strip()
+    # Sports
+    if re.search(r"\bmlb\b|\bbaseball\b", low):
+        return "MLB baseball"
+    if re.search(r"\bnba\b|\bbasketball\b", low):
+        return "NBA basketball"
+    if re.search(r"\bnhl\b|\bhockey\b|\bstanley cup\b", low):
+        return "NHL hockey Stanley Cup"
+    if re.search(r"\bf1\b|\bformula 1\b|\bformula one\b", low):
+        return "Formula 1 F1 racing"
+    # MLB player stat lines (e.g. "Mike Trout: 5+ hits + runs + RBIs?")
+    player_match = re.match(r"([A-Z][a-z]+ [A-Z][a-z]+):", contract_title)
+    if player_match:
+        return f"{player_match.group(1)} MLB stats"
 
+    # Fallback: strip numbers, dates, punctuation, and short stop words
     stop = {
         "will", "the", "a", "an", "be", "is", "are", "was", "were",
         "on", "in", "at", "by", "to", "of", "for", "it", "today",
-        "tonight", "tomorrow", "this", "that",
+        "tonight", "tomorrow", "this", "that", "above", "below",
+        "more", "than", "up", "next", "mins", "price", "range",
     }
-    words = re.findall(r"[A-Za-z0-9$%]+", t)
+    words = re.findall(r"[A-Za-z]{3,}", contract_title)
     kept = [w for w in words if w.lower() not in stop]
-    return " ".join(kept) if kept else t
+    return " ".join(kept[:5]) if kept else contract_title[:60]
 
 
 # ── Week 2 smoke test ─────────────────────────────────────────────────────────

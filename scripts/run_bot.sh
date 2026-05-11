@@ -9,6 +9,8 @@
 
 set -euo pipefail
 
+export PATH="$HOME/.local/bin:$PATH"
+
 MODE=$(uv run python -c "import yaml; print(yaml.safe_load(open('config/settings.yaml'))['trading']['mode'])")
 echo "[bot] Starting trader in ${MODE^^} mode"
 

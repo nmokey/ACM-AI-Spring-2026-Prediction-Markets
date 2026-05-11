@@ -9,6 +9,8 @@
 
 set -euo pipefail
 
+export PATH="$HOME/.local/bin:$PATH"
+
 FEATURE_INTERVAL=900   # 15 min in seconds
 SENTIMENT_INTERVAL=1800 # 30 min in seconds
 

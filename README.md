@@ -180,62 +180,33 @@ run_pipeline.sh  (every 15 min)         run_bot.sh  (every 60 sec)
 ### Start on the club server
 
 ```bash
-# In separate terminals (or use tmux/screen):
-nohup bash scripts/run_pipeline.sh > logs/pipeline.log 2>&1 &
-nohup bash scripts/run_bot.sh      > logs/bot.log      2>&1 &
+# Install uv (user-level, doesn't require sudo):
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source $HOME/.local/bin/env
+
+# Install all dependencies:
+uv sync
+
+# Run in a tmux session so it survives SSH disconnect:
+tmux new -s pipeline
+bash scripts/run_pipeline.sh 2>&1 | tee logs/pipeline.log
+# Detach with Ctrl+B D
 
 # Daily — run once in the morning or set up a cron job:
 uv run python -m scripts.label_resolved
+# To automate:
+# 0 9 * * * cd /path/to/repo && ~/.local/bin/uv run python -m scripts.label_resolved >> logs/label.log 2>&1
 ```
 
 ### Verify outputs are well-formed
 
-After each pipeline step, check these invariants:
+Use the validation script to check all four pipeline outputs at once:
 
 ```bash
-# 1. live_features.parquet — should have ~100-300 rows, all key features non-null
-uv run python -c "
-import pandas as pd
-df = pd.read_parquet('data/features/live_features.parquet')
-print('rows:', len(df))
-print('null counts:')
-print(df[['market_price','btc_change_1h','precip_prob_new_york']].isnull().sum())
-assert df['contract_id'].notna().all(), 'contract_id has nulls'
-assert df['btc_change_1h'].notna().all(), 'crypto fetch failed'
-print('PASS')
-"
-
-# 2. nlp/sentiment.json — should cover all live contracts, some non-zero scores
-uv run python -c "
-import json, pandas as pd
-with open('nlp/sentiment.json') as f: s = json.load(f)
-live = pd.read_parquet('data/features/live_features.parquet')
-coverage = len(s) / len(live)
-nonzero = sum(1 for v in s.values() if v['sentiment_score'] != 0.0)
-print(f'sentiment coverage: {coverage:.0%}  non-zero: {nonzero}/{len(s)}')
-assert coverage > 0.9, 'sentiment missing most contracts'
-print('PASS')
-"
-
-# 3. signals/predictions.json — should match live contracts, p_model in [0,1]
-uv run python -c "
-import json
-with open('signals/predictions.json') as f: p = json.load(f)
-vals = [v['p_model'] for v in p.values()]
-print(f'{len(p)} predictions  min={min(vals):.3f}  max={max(vals):.3f}  mean={sum(vals)/len(vals):.3f}')
-assert all(0 <= v <= 1 for v in vals), 'p_model out of [0,1]'
-print('PASS')
-"
-
-# 4. snapshots.parquet — row count should grow every 15 min
-uv run python -c "
-import pandas as pd
-df = pd.read_parquet('data/features/snapshots.parquet')
-labeled = df['resolved_yes'].notna().sum()
-print(f'{len(df)} total snapshot rows | {labeled} labeled | {len(df)-labeled} pending')
-print('unique fetched_at timestamps:', df['fetched_at'].nunique())
-"
+uv run python scripts/validate_features.py
 ```
+
+This checks row counts, null fields, value ranges, sentiment coverage, and snapshot accumulation, and prints PASS/FAIL per invariant. Run it after the pipeline has completed at least one full cycle.
 
 ### Manual step-by-step (for development / debugging)
 
@@ -260,6 +231,31 @@ uv run python -m scripts.label_resolved
 uv run python -m models.train
 # Reads snapshots.parquet (labeled rows only) → overwrites xgb_v1.joblib
 ```
+
+## NLP Pipeline Notes
+
+### News fetching
+
+`nlp/news_client.py` fetches headlines from GNews (primary) with GDELT as a free fallback. GNews 403/429 errors are handled gracefully — the client falls back to GDELT automatically rather than crashing.
+
+`_extract_query()` maps Kalshi contract titles to clean, newsworthy search queries. It handles all live contract types: crypto (BTC, ETH, SOL, DOGE, BNB, XRP), macro (Fed rate, CPI, GDP, ADP, WTI, EUR/USD, USD/JPY), weather (city name extracted from title), sports (MLB, NBA, NHL, F1, per-player stat lines). Numbers, thresholds, and dates are stripped so that contracts on the same underlying topic (e.g. all 318 KXBTCD contracts) map to a single query like `"bitcoin price"` — reducing ~1,100 API calls to ~47 unique queries per sentiment cycle.
+
+### Sentiment scoring
+
+`nlp/sentiment.py` embeds all headlines once into a matrix, then scores all contracts against it in a single batched matrix multiplication — O(1) embedding passes instead of O(contracts). This reduced the scoring phase from hanging indefinitely (sequential per-contract embedding over 1,100 iterations) to ~50s. Full sentiment cycle timing:
+
+| Phase | Time |
+|---|---|
+| News fetch (47 queries via GDELT, with timeouts) | ~90s |
+| Batch embedding + cosine similarity | ~50s |
+| VADER sentiment scoring | ~1s |
+| **Total** | **~2m 30s** |
+
+The sentiment step runs every 30 min (every other 15-min pipeline cycle), so most cycles are just the fast `data.engineer` run (~10s).
+
+### GNews rate limits
+
+The free GNews tier has a low daily request cap. If all queries return 403, the key is exhausted for the day — GDELT fallback takes over automatically. To increase limits, request free academic access from your UCLA email at gnews.io.
 
 ## Data Contracts
 

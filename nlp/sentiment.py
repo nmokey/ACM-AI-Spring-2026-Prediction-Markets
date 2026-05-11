@@ -129,16 +129,63 @@ def build_sentiment_signals(
     """
     
     client = NewsClient()
+    # Deduplicate by query string — many contracts share the same topic
+    from nlp.news_client import _extract_query
+    seen_queries: set[str] = set()
+    unique_titles: list[str] = []
+    for c in contracts:
+        q = _extract_query(c["title"])
+        if q not in seen_queries:
+            seen_queries.add(q)
+            unique_titles.append(c["title"])
+    client.poll_for_contracts(unique_titles)
     all_headlines = client.get_recent_headlines()
 
     signals: dict[str, SentimentSignal] = {}
     now = datetime.now(timezone.utc)
 
-    for contract in contracts:
-        cid = contract["contract_id"]
-        relevant = score_relevance(contract["title"], all_headlines)
+    if not all_headlines:
+        for contract in contracts:
+            signals[contract["contract_id"]] = SentimentSignal(
+                contract_id=contract["contract_id"],
+                timestamp=now,
+                sentiment_score=0.0,
+                sentiment_confidence=0.0,
+                n_relevant_headlines=0,
+            )
+        return signals
 
-        if not relevant:
+    # Pre-score all headline text once so it's cached for per-contract weighting
+    headline_scores: list[tuple[float, float]] = [
+        score_text(h["text"], use_finbert=use_finbert) for h in all_headlines
+    ]
+
+    # Embed all headlines once, then batch-score all contracts against that matrix
+    from nlp.relevance import _get_model
+    import numpy as np
+    model = _get_model()
+    headline_texts = [h["text"] for h in all_headlines]
+    headline_embs = model.encode(headline_texts, batch_size=64, show_progress_bar=False)
+    # Normalize for cosine similarity
+    headline_norms = np.linalg.norm(headline_embs, axis=1, keepdims=True)
+    headline_embs_norm = headline_embs / np.maximum(headline_norms, 1e-9)
+
+    contract_titles = [c["title"] for c in contracts]
+    contract_embs = model.encode(contract_titles, batch_size=64, show_progress_bar=False)
+    contract_norms = np.linalg.norm(contract_embs, axis=1, keepdims=True)
+    contract_embs_norm = contract_embs / np.maximum(contract_norms, 1e-9)
+
+    # Shape: (n_contracts, n_headlines)
+    sim_matrix = contract_embs_norm @ headline_embs_norm.T
+    MIN_SCORE = 0.25
+    TOP_K = 5
+
+    for i, contract in enumerate(contracts):
+        cid = contract["contract_id"]
+        sims = sim_matrix[i]
+        top_idx = np.where(sims >= MIN_SCORE)[0]
+
+        if len(top_idx) == 0:
             signals[cid] = SentimentSignal(
                 contract_id=cid,
                 timestamp=now,
@@ -148,21 +195,24 @@ def build_sentiment_signals(
             )
             continue
 
-        total_weight = sum(h["relevance_score"] for h in relevant)
+        top_idx = top_idx[np.argsort(-sims[top_idx])][:TOP_K]
+        weights = sims[top_idx]
+        total_weight = float(weights.sum())
+
         weighted_score = 0.0
         weighted_conf = 0.0
-        for h in relevant:
-            w = h["relevance_score"] / total_weight
-            s, c = score_text(h["text"], use_finbert=use_finbert)
-            weighted_score += w * s
-            weighted_conf += w * c
+        for j, w in zip(top_idx, weights):
+            s, c = headline_scores[j]
+            weight = float(w) / total_weight
+            weighted_score += weight * s
+            weighted_conf += weight * c
 
         signals[cid] = SentimentSignal(
             contract_id=cid,
             timestamp=now,
             sentiment_score=max(-1.0, min(1.0, weighted_score)),
             sentiment_confidence=max(0.0, min(1.0, weighted_conf)),
-            n_relevant_headlines=len(relevant),
+            n_relevant_headlines=len(top_idx),
         )
 
     return signals
