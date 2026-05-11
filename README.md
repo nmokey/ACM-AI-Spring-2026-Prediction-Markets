@@ -150,44 +150,115 @@ prediction-markets/
 
 ## Running the Pipeline
 
-### Step 1 — Refresh live features (Team 1)
-```bash
-uv run python -m data.engineer
-# Writes data/features/live_features.parquet — 200 open contracts, 17 feature columns
+There are two separate processes that must run concurrently on the server. They have different jobs:
+
+**`run_pipeline.sh`** — the data + ML loop. Runs continuously, every 15 min. Fetches live market/crypto/weather data, scores NLP sentiment, runs model inference, and **appends a snapshot row** for every open contract to `data/features/snapshots.parquet`. Does not submit trades.
+
+**`run_bot.sh`** — the execution loop. Reads `predictions.json` every 60 seconds and submits (or dry-run logs) orders. Depends on `run_pipeline.sh` to keep predictions fresh.
+
+**`scripts/label_resolved.py`** — the labeling job. Run once daily. Checks Kalshi for settled contracts, stamps `resolved_yes` on their snapshot rows. This is what converts raw snapshots into labeled training data.
+
+```
+run_pipeline.sh  (every 15 min)         run_bot.sh  (every 60 sec)
+  │                                        │
+  ├─ data.engineer                         └─ execution.trader
+  │    ├─ fetches Kalshi markets                reads predictions.json
+  │    ├─ fetches BTC/ETH from Coinbase         applies risk + Kelly sizing
+  │    ├─ fetches weather from NOAA             logs to dry_run_trades.csv
+  │    ├─ writes live_features.parquet
+  │    └─ appends to snapshots.parquet     label_resolved.py  (daily)
+  │         (resolved_yes = null)            │
+  ├─ nlp.sentiment  (every 30 min)          └─ queries Kalshi for settled status
+  │    reads live_features.parquet               stamps resolved_yes = 0 or 1
+  │    writes nlp/sentiment.json                 → snapshots become training rows
+  └─ models.predict
+       reads live_features.parquet
+       reads nlp/sentiment.json
+       writes predictions.json
 ```
 
-### Step 2 — Fetch headlines and score sentiment (Team 2 NLP)
-```bash
-uv run python -m nlp.sentiment
-# Reads live_features.parquet for contract titles, queries GNews/GDELT,
-# scores with VADER or FinBERT, writes nlp/sentiment.json
-```
+### Start on the club server
 
-### Step 3 — Train or retrain the model (Team 2 Modeling)
 ```bash
-uv run python -m models.train
-# Reads data/features/historical_features.parquet + nlp/sentiment.json
-# Trains XGBoost + isotonic calibration, writes models/trained/xgb_v1.joblib
-```
-
-### Step 4 — Run live inference (Team 2 Modeling)
-```bash
-uv run python -m models.predict
-# Reads live_features.parquet + sentiment.json + xgb_v1.joblib
-# Writes signals/predictions.json
-```
-
-### Step 5 — Start the trading bot (Team 3)
-```bash
-bash scripts/run_bot.sh
-# Reads predictions.json every 60 seconds, applies risk checks + Kelly sizing,
-# logs orders to logs/dry_run_trades.csv (or submits live when mode: "live")
-```
-
-For overnight runs on the club server:
-```bash
+# In separate terminals (or use tmux/screen):
 nohup bash scripts/run_pipeline.sh > logs/pipeline.log 2>&1 &
-nohup bash scripts/run_bot.sh > logs/bot.log 2>&1 &
+nohup bash scripts/run_bot.sh      > logs/bot.log      2>&1 &
+
+# Daily — run once in the morning or set up a cron job:
+uv run python -m scripts.label_resolved
+```
+
+### Verify outputs are well-formed
+
+After each pipeline step, check these invariants:
+
+```bash
+# 1. live_features.parquet — should have ~100-300 rows, all key features non-null
+uv run python -c "
+import pandas as pd
+df = pd.read_parquet('data/features/live_features.parquet')
+print('rows:', len(df))
+print('null counts:')
+print(df[['market_price','btc_change_1h','precip_prob_new_york']].isnull().sum())
+assert df['contract_id'].notna().all(), 'contract_id has nulls'
+assert df['btc_change_1h'].notna().all(), 'crypto fetch failed'
+print('PASS')
+"
+
+# 2. nlp/sentiment.json — should cover all live contracts, some non-zero scores
+uv run python -c "
+import json, pandas as pd
+with open('nlp/sentiment.json') as f: s = json.load(f)
+live = pd.read_parquet('data/features/live_features.parquet')
+coverage = len(s) / len(live)
+nonzero = sum(1 for v in s.values() if v['sentiment_score'] != 0.0)
+print(f'sentiment coverage: {coverage:.0%}  non-zero: {nonzero}/{len(s)}')
+assert coverage > 0.9, 'sentiment missing most contracts'
+print('PASS')
+"
+
+# 3. signals/predictions.json — should match live contracts, p_model in [0,1]
+uv run python -c "
+import json
+with open('signals/predictions.json') as f: p = json.load(f)
+vals = [v['p_model'] for v in p.values()]
+print(f'{len(p)} predictions  min={min(vals):.3f}  max={max(vals):.3f}  mean={sum(vals)/len(vals):.3f}')
+assert all(0 <= v <= 1 for v in vals), 'p_model out of [0,1]'
+print('PASS')
+"
+
+# 4. snapshots.parquet — row count should grow every 15 min
+uv run python -c "
+import pandas as pd
+df = pd.read_parquet('data/features/snapshots.parquet')
+labeled = df['resolved_yes'].notna().sum()
+print(f'{len(df)} total snapshot rows | {labeled} labeled | {len(df)-labeled} pending')
+print('unique fetched_at timestamps:', df['fetched_at'].nunique())
+"
+```
+
+### Manual step-by-step (for development / debugging)
+
+```bash
+# Step 1 — Refresh live features (Team 1)
+uv run python -m data.engineer
+# Writes live_features.parquet AND appends to snapshots.parquet
+
+# Step 2 — Score sentiment (Team 2 NLP)
+uv run python -m nlp.sentiment
+# Reads live_features.parquet titles → writes nlp/sentiment.json
+
+# Step 3 — Run inference (Team 2 Modeling)
+uv run python -m models.predict
+# Reads live_features.parquet + sentiment.json → writes predictions.json
+
+# Step 4 — Label settled contracts (run daily)
+uv run python -m scripts.label_resolved
+# Reads snapshots.parquet, queries Kalshi, stamps resolved_yes
+
+# Step 5 — Retrain (once you have 200+ labeled rows)
+uv run python -m models.train
+# Reads snapshots.parquet (labeled rows only) → overwrites xgb_v1.joblib
 ```
 
 ## Data Contracts

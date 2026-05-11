@@ -156,7 +156,15 @@ def save_model(model) -> None:
 
 
 if __name__ == "__main__":
+    import argparse
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    df = load_data(Path("data/features/historical_features.parquet"))
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--features",
+        default="data/features/snapshots.parquet",
+        help="Path to labeled features parquet (default: snapshots.parquet)",
+    )
+    args = parser.parse_args()
+    df = load_data(Path(args.features))
     model, X_test, y_test = train(df)
     save_model(model)

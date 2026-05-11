@@ -30,6 +30,7 @@ with open(ROOT / "config" / "settings.yaml") as f:
 
 FEATURES_PATH = ROOT / CONFIG["data"]["features_path"]
 FEATURES_PATH.parent.mkdir(parents=True, exist_ok=True)
+SNAPSHOTS_PATH = ROOT / CONFIG["data"]["snapshots_path"]
 
 CRYPTO_PAIRS = CONFIG["markets"]["crypto_pairs"]
 TARGET_CITIES = CONFIG["markets"]["target_cities"]
@@ -215,10 +216,65 @@ def save_features(df: pd.DataFrame) -> None:
     logger.info("Wrote %d rows to %s", len(df), FEATURES_PATH)
 
 
+def append_snapshot(df: pd.DataFrame) -> None:
+    """
+    Append the current live feature rows to the rolling snapshot file.
+
+    Each row gets a resolved_yes=None placeholder — the label_resolved.py
+    script fills these in later once Kalshi settles the contracts.
+
+    Deduplicates on (contract_id, fetched_at) so re-running engineer.py
+    within the same minute doesn't double-write.
+    """
+    snapshot_cols = [
+        "contract_id", "title", "market_category",
+        "market_price", "volume_24h", "open_interest", "days_to_resolution",
+        "btc_price", "btc_change_1h", "btc_change_6h",
+        "eth_price", "eth_change_1h", "eth_change_6h",
+        "precip_prob_new_york", "precip_prob_los_angeles", "precip_prob_chicago",
+        "sentiment_score", "sentiment_confidence",
+        "fetched_at", "resolved_yes",
+    ]
+
+    # Join current sentiment cache onto the snapshot rows
+    sentiment_path = ROOT / CONFIG["data"]["sentiment_path"]
+    if sentiment_path.exists():
+        import json
+        with open(sentiment_path) as f:
+            raw = json.load(f)
+        sent_df = pd.DataFrame.from_dict(raw, orient="index")[
+            ["sentiment_score", "sentiment_confidence"]
+        ]
+        sent_df.index.name = "contract_id"
+        new_rows = df.set_index("contract_id").join(sent_df, how="left").reset_index()
+    else:
+        new_rows = df.copy()
+        new_rows["sentiment_score"] = float("nan")
+        new_rows["sentiment_confidence"] = float("nan")
+
+    new_rows["resolved_yes"] = pd.NA
+
+    for col in snapshot_cols:
+        if col not in new_rows.columns:
+            new_rows[col] = pd.NA
+    new_rows = new_rows[snapshot_cols]
+
+    if SNAPSHOTS_PATH.exists():
+        existing = pd.read_parquet(SNAPSHOTS_PATH)
+        combined = pd.concat([existing, new_rows], ignore_index=True)
+        combined = combined.drop_duplicates(subset=["contract_id", "fetched_at"], keep="first")
+    else:
+        combined = new_rows
+
+    combined.to_parquet(SNAPSHOTS_PATH, index=False)
+    logger.info("Snapshot: %d total rows in %s (+%d new)", len(combined), SNAPSHOTS_PATH, len(new_rows))
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     df = build_features()
     save_features(df)
+    append_snapshot(df)
     print(df.head())
     print(f"\nNull counts:\n{df.isnull().sum()}")
     print(f"\nSaved {len(df)} contracts to {FEATURES_PATH}")

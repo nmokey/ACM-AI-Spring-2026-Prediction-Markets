@@ -32,6 +32,7 @@ pipeline:
 
 data:
   features_path: "data/features/live_features.parquet"
+  snapshots_path: "data/features/snapshots.parquet"
   headlines_db_path: "data/store/headlines.db"
   sentiment_path: "nlp/sentiment.json"
   predictions_path: "signals/predictions.json"

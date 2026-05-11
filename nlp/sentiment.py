@@ -181,11 +181,23 @@ def save_sentiment_signals(signals: dict[str, SentimentSignal]) -> None:
 
 
 if __name__ == "__main__":
+    import yaml
     logging.basicConfig(level=logging.INFO)
-    # Quick test — replace with a real contract title from Kalshi
-    test_contracts = [
-        {"contract_id": "TEST-001", "title": "Will BTC close above $90k today?"},
-    ]
-    signals = build_sentiment_signals(test_contracts)
-    for cid, sig in signals.items():
-        print(f"{cid}: score={sig.sentiment_score:.3f}  conf={sig.sentiment_confidence:.3f}  n={sig.n_relevant_headlines}")
+
+    with open(Path(__file__).parents[1] / "config" / "settings.yaml") as f:
+        _cfg = yaml.safe_load(f)
+
+    features_path = Path(_cfg["data"]["features_path"])
+    if not features_path.exists():
+        raise FileNotFoundError(f"Run data.engineer first — {features_path} not found")
+
+    import pandas as pd
+    df = pd.read_parquet(features_path)
+    contracts = df[["contract_id", "title"]].dropna().to_dict("records")
+    logger.info("Scoring sentiment for %d live contracts", len(contracts))
+
+    signals = build_sentiment_signals(contracts)
+    save_sentiment_signals(signals)
+
+    nonzero = sum(1 for s in signals.values() if s.sentiment_score != 0.0)
+    print(f"Saved {len(signals)} signals ({nonzero} non-zero) to {SENTIMENT_PATH}")
