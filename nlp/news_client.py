@@ -73,13 +73,13 @@ class NewsClient:
         self.session = requests.Session()
         self.conn = init_db()
 
-    def fetch_headlines(self, query: str, max_results: int = 10) -> list[dict[str, Any]]:
+    def fetch_headlines(self, query: str, max_results: int = 25) -> list[dict[str, Any]]:
         """
         Query GNews for recent headlines matching `query`.
 
         Args:
             query:       search string (e.g. "bitcoin price" or "New York rain today")
-            max_results: max articles (GNews free tier: up to 10 per call)
+            max_results: max articles (Essential tier: up to 25 per call)
 
         Returns:
             List of dicts with keys: id, text, source, url, timestamp, query
@@ -202,27 +202,47 @@ class NewsClient:
         cols = [col[0] for col in cursor.description]
         return [dict(zip(cols, row)) for row in cursor.fetchall()]
 
+    def _query_last_fetched(self, query: str) -> float | None:
+        """Return the unix timestamp of the most recent headline stored for this query, or None."""
+        row = self.conn.execute(
+            "SELECT MAX(timestamp) FROM headlines WHERE query = ?", (query,)
+        ).fetchone()[0]
+        if not row:
+            return None
+        try:
+            from datetime import datetime, timezone
+            dt = datetime.fromisoformat(row.replace("Z", "+00:00"))
+            return dt.timestamp()
+        except Exception:
+            return None
+
     def poll_for_contracts(
         self,
         contract_titles: list[str],
         sleep_between_calls: float = 1.0,
+        min_age_seconds: float = 7200,  # only re-fetch a query if headlines are >2h old
     ) -> int:
         """
         Fetch and store headlines for a list of Kalshi contract titles.
-        Extracts a short keyword query from each title before calling GNews.
-
-        TODO (Week 3):
-            - For each title, call _extract_query(title) to get a search string
-            - Call self.fetch_headlines(query) and self.store_headlines(headlines)
-            - Sleep between calls to respect rate limits
-            - Return total new headlines stored
+        Skips queries whose headlines were fetched less than min_age_seconds ago,
+        keeping us within GNews rate limits (Essential: 1000 req/day).
         """
         total_stored = 0
+        now = time.time()
+        seen_queries: set[str] = set()
 
         for title in contract_titles:
             query = _extract_query(title)
-            logger.info(f"Polling contract: {title!r} → query: {query!r}")
+            if query in seen_queries:
+                continue
+            seen_queries.add(query)
 
+            last = self._query_last_fetched(query)
+            if last is not None and (now - last) < min_age_seconds:
+                logger.debug("Skipping %r — fetched %.0fm ago", query, (now - last) / 60)
+                continue
+
+            logger.info(f"Polling: {query!r}")
             headlines = self.fetch_headlines(query)
             stored = self.store_headlines(headlines)
             total_stored += stored

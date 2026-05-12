@@ -129,16 +129,7 @@ def build_sentiment_signals(
     """
     
     client = NewsClient()
-    # Deduplicate by query string — many contracts share the same topic
-    from nlp.news_client import _extract_query
-    seen_queries: set[str] = set()
-    unique_titles: list[str] = []
-    for c in contracts:
-        q = _extract_query(c["title"])
-        if q not in seen_queries:
-            seen_queries.add(q)
-            unique_titles.append(c["title"])
-    client.poll_for_contracts(unique_titles)
+    client.poll_for_contracts([c["title"] for c in contracts])
     all_headlines = client.get_recent_headlines()
 
     signals: dict[str, SentimentSignal] = {}
