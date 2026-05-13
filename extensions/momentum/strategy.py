@@ -49,4 +49,38 @@ def compute_signals(
         4. resolved_yes = 1 if next bar's close > this bar's close, else 0
         5. market_price = 0.50 (naive baseline) or add ±Gaussian noise
     """
-    raise NotImplementedError("Implement me! See extensions/SPEC.md for full hints.")
+
+    # 1. Compute rolling % change
+    momentum = df['close'].pct_change(periods=lookback_hours)
+    
+    # 2. Z-score over a 48h rolling window
+    rolling_mean = momentum.rolling(window=48).mean()
+    rolling_std = momentum.rolling(window=48).std()
+    
+    # Adding a small epsilon to avoid division by zero in case of constant prices
+    z_score = (momentum - rolling_mean) / (rolling_std + 1e-9)
+    
+    # Initialize the output DataFrame
+    out = pd.DataFrame(index=df.index)
+    
+    # 3. p_model = expit(z_score * p_scale)  ← momentum direction
+    out['p_model'] = expit(z_score * p_scale)
+    
+    # 4. resolved_yes = 1 if next bar's close > this bar's close, else 0
+    # Using shift(-1) to look ahead to the next bar
+    out['resolved_yes'] = (df['close'].shift(-1) > df['close']).astype(int)
+    
+    # 5. market_price = 0.50 (naive baseline)
+    out['market_price'] = 0.50
+    
+    # Save z_score temporarily for filtering purposes
+    out['z_score'] = z_score
+    
+    # Drop rows where z_score is NaN (due to rolling windows/pct_change)
+    out = out.dropna(subset=['z_score'])
+    
+    # Filter rows based on the absolute z-score threshold
+    out = out[out['z_score'].abs() >= threshold]
+    
+    # Return strictly the requested columns
+    return out[['p_model', 'market_price', 'resolved_yes']]
