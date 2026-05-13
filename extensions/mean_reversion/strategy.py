@@ -64,7 +64,7 @@ def compute_signals(
     out = pd.DataFrame(index=df.index)
     
     # 3. p_model = expit(z_score * p_scale)  ← momentum direction
-    out['p_model'] = expit(z_score * p_scale)
+    out['p_model'] = expit(-z_score * p_scale)
     
     # 4. resolved_yes = 1 if next bar's close > this bar's close, else 0
     # Using shift(-1) to look ahead to the next bar
