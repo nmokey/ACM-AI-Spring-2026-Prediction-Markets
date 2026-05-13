@@ -15,13 +15,25 @@ Quick start (after downloading a NOAA CDO CSV for your city):
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pandas as pd
 import requests
+from dotenv import load_dotenv
 
-NOAA_TOKEN = "XsMVLnIGeVYQXkqxBiHxrnrTOlYLwzPk"
+load_dotenv()
 
 CDO_API_BASE = "https://www.ncei.noaa.gov/cdo-web/api/v2/data"
+
+
+def get_noaa_token() -> str:
+    token = os.getenv("NOAA_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError(
+            "NOAA_TOKEN is not set. Add it to your .env file or environment variables."
+        )
+    return token
 
 
 def fetch_noaa_tmax_data(
@@ -32,7 +44,7 @@ def fetch_noaa_tmax_data(
     limit: int = 1000,
 ) -> pd.DataFrame:
     """Fetch NOAA daily TMAX data for a station and return a clean DataFrame."""
-    headers = {"token": NOAA_TOKEN}
+    headers = {"token": get_noaa_token()}
     params = {
         "datasetid": "GHCND",
         "stationid": stationid,
