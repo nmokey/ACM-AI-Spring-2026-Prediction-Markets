@@ -22,19 +22,22 @@ import time
 
 from coinbase.rest import RESTClient
 
+# Web address (endpoint) for the Coinbase Advanced Trade API
 BASE_URL = "https://api.coinbase.com/api/v3/brokerage/market"
+# These are the crptocurrencies we care about which are: Bitcoin (BTC) and Ethereum (ETH) priced in US Dollars (USD)
 DEFAULT_PAIRS = ["BTC-USD", "ETH-USD"]
 
 
 class CryptoClient:
 
-    def __init__(self) -> None:
-        load_dotenv()
+    
+    def __init__(self) -> None: 
+        load_dotenv() #looks for a .env file
 
-        api_key = os.getenv("COINBASE_API_KEY")
-        api_secret = os.getenv("COINBASE_API_SECRET")
+        api_key = os.getenv("COINBASE_API_KEY") #grabs my Coinbase API key in the .env file
+        api_secret = os.getenv("COINBASE_API_SECRET") #grabs my Coinbase API secret in the .env file
 
-        self.client = RESTClient(api_key=api_key, api_secret=api_secret)
+        self.client = RESTClient(api_key=api_key, api_secret=api_secret) #instance attribute called "client"
 
     def get_price(self, symbol: str) -> float:
         """
