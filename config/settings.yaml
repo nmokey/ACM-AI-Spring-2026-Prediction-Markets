@@ -38,3 +38,5 @@ data:
   predictions_path: "signals/predictions.json"
   trades_log_path: "logs/trades.csv"
   dry_run_log_path: "logs/dry_run_trades.csv"
+  resolved_log_path: "logs/resolved_trades.csv"
+  model_metrics_path: "logs/model_metrics.jsonl"
