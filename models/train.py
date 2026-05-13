@@ -164,7 +164,16 @@ if __name__ == "__main__":
         default="data/features/snapshots.parquet",
         help="Path to labeled features parquet (default: snapshots.parquet)",
     )
+    parser.add_argument(
+        "--dedup",
+        action="store_true",
+        help="Train on one row per contract (last snapshot before resolution) to reduce repetition bias",
+    )
     args = parser.parse_args()
     df = load_data(Path(args.features))
+    if args.dedup:
+        before = len(df)
+        df = df.sort_values("fetched_at").groupby("contract_id").last().reset_index()
+        logger.info("Dedup: %d rows → %d unique contracts", before, len(df))
     model, X_test, y_test = train(df)
     save_model(model)
