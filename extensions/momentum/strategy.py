@@ -78,6 +78,7 @@ def compute_signals(
     
     # Drop rows where z_score is NaN (due to rolling windows/pct_change)
     out = out.dropna(subset=['z_score'])
+    out = out.iloc[:-1]  # Drop the last row where resolved_yes is NaN due to shift(-1) 
     
     # Filter rows based on the absolute z-score threshold
     out = out[out['z_score'].abs() >= threshold]
