@@ -11,6 +11,7 @@ trading:
   max_position_pct: 0.05   # max % of account on a single contract  →  $5 on $100 account
   max_total_exposure_pct: 0.40  # pause new trades if open positions exceed 40% of account
   min_confidence: 0.60     # skip predictions below this confidence threshold
+  starting_balance: 100.0
 
 markets:
   categories:
@@ -38,5 +39,6 @@ data:
   predictions_path: "signals/predictions.json"
   trades_log_path: "logs/trades.csv"
   dry_run_log_path: "logs/dry_run_trades.csv"
+  live_log_path: "logs/live_trades.csv"
   resolved_log_path: "logs/resolved_trades.csv"
   model_metrics_path: "logs/model_metrics.jsonl"

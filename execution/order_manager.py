@@ -49,7 +49,10 @@ class OrderManager:
         re-enter the same contracts. A position is considered open if it appears
         in the entry log but not yet in the resolved log.
         """
-        entry_log = Path(CONFIG["data"]["dry_run_log_path"])
+        if self.mode == "live":
+            entry_log = Path(CONFIG["data"]["live_log_path"])
+        else:
+            entry_log = Path(CONFIG["data"]["dry_run_log_path"])
         resolved_log = Path(CONFIG["data"]["resolved_log_path"])
 
         if not entry_log.exists():
@@ -91,7 +94,7 @@ class OrderManager:
     def open_positions(self) -> dict[str, float]:
         return self._open_positions
 
-    _DRY_RUN_STARTING_BALANCE = 100.0
+    _DRY_RUN_STARTING_BALANCE: float = CONFIG["trading"]["starting_balance"]
 
     @property
     def account_balance(self) -> float:
@@ -150,7 +153,7 @@ class OrderManager:
         )
 
         if self.mode == "dry_run":
-            log_dry_run_trade(record)
+            pass
         else:
             order = self.kalshi.place_order(
                 ticker=contract_id,
@@ -165,6 +168,8 @@ class OrderManager:
                 logger.warning("Order %s for %s immediately canceled — skipping", order_id, contract_id)
                 return None
 
+            self._open_positions[contract_id] = n_contracts * price
+
             if status == "resting":
                 order_id, status = self._wait_for_fill(order_id, contract_id)
                 if status != "executed":
@@ -176,14 +181,19 @@ class OrderManager:
                         "Order %s for %s did not fill within %ds (status=%s) — canceled",
                         order_id, contract_id, _FILL_TIMEOUT_SEC, status,
                     )
+                    self._open_positions.pop(contract_id, None)
                     return None
 
             record = record.model_copy(update={"order_id": order_id})
             self._order_ids[contract_id] = order_id
+            log_dry_run_trade(record)
             logger.info("Live order %s filled: %s %s x%d @ %dc",
                         order_id, side, contract_id, n_contracts, limit_price_cents)
 
-        self._open_positions[contract_id] = bet_dollars
+        if self.mode == "dry_run":
+            log_dry_run_trade(record)
+            self._open_positions[contract_id] = n_contracts * price
+
         logger.info("Position opened: %s %s x%d @ %dc", side, contract_id, n_contracts, limit_price_cents)
         return record
 
@@ -260,8 +270,11 @@ class OrderManager:
         return resolved
 
     def _get_log_entry(self, contract_id: str) -> dict | None:
-        """Return the most recent CSV row for contract_id."""
-        log_path = Path(CONFIG["data"]["dry_run_log_path"])
+        """Return the most recent CSV row for contract_id from the appropriate trade log."""
+        if self.mode == "live":
+            log_path = Path(CONFIG["data"]["live_log_path"])
+        else:
+            log_path = Path(CONFIG["data"]["dry_run_log_path"])
         if not log_path.exists():
             return None
         last = None

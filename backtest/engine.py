@@ -20,6 +20,7 @@ import pandas as pd
 import yaml
 
 from execution.kelly import kelly_fraction, dollars_to_contracts
+from execution.risk import check_trade
 from backtest.metrics import compute_metrics, print_metrics
 
 logger = logging.getLogger(__name__)
@@ -61,23 +62,22 @@ def _load_dummy_trades(
         p_model: float = entry["p_model"]
         confidence: float = entry["confidence"]
 
-        if confidence < TRADING_CFG["min_confidence"]:
-            logger.debug("Skipping %s — confidence too low", contract_id)
-            continue
-
         # Synthetic market price: offset p_model by a random amount so we have edge
         offset = rng.uniform(0.05, 0.15) * rng.choice([-1, 1])
         market_price = max(0.05, min(0.95, p_model + offset))
 
-        edge = abs(p_model - market_price)
-        if edge < TRADING_CFG["min_edge"]:
-            logger.debug("Skipping %s — edge %.3f below min", contract_id, edge)
+        risk = check_trade(
+            p_model=p_model,
+            market_price=market_price,
+            confidence=confidence,
+            open_positions=open_positions,
+            account_balance=balance,
+        )
+        if not risk.passed:
+            logger.debug("Skipping %s — %s", contract_id, risk.reason)
             continue
 
-        total_exposure = sum(open_positions.values())
-        if total_exposure >= TRADING_CFG["max_total_exposure_pct"] * balance:
-            logger.debug("Skipping %s — exposure cap reached", contract_id)
-            continue
+        edge = abs(p_model - market_price)
 
         bet_dollars, side = kelly_fraction(
             p_model=p_model,
@@ -133,7 +133,7 @@ def run_backtest(
     features_path: str | Path | None = None,
     sentiment_path: str | Path | None = None,
     model=None,
-    starting_balance: float = 1000.0,
+    starting_balance: float = TRADING_CFG["starting_balance"],
 ) -> pd.DataFrame:
     """
     Simulate trading on historical resolved contracts.

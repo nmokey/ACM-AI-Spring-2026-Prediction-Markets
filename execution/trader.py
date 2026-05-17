@@ -38,6 +38,7 @@ PIPELINE_CFG = CONFIG["pipeline"]
 DATA_CFG = CONFIG["data"]
 
 DRY_RUN_LOG = Path(DATA_CFG["dry_run_log_path"])
+LIVE_LOG = Path(DATA_CFG["live_log_path"])
 RESOLVED_LOG = Path(DATA_CFG["resolved_log_path"])
 RESOLVED_LOG.parent.mkdir(parents=True, exist_ok=True)
 
@@ -379,7 +380,8 @@ def _ts() -> str:
 
 def _restore_open_book(order_manager: OrderManager) -> None:
     """On startup, rebuild _open_book and _all_trades from the CSV logs."""
-    if not DRY_RUN_LOG.exists():
+    trade_log = LIVE_LOG if order_manager.mode == "live" else DRY_RUN_LOG
+    if not trade_log.exists():
         return
 
     resolved: set[str] = set()
@@ -390,7 +392,7 @@ def _restore_open_book(order_manager: OrderManager) -> None:
                     resolved.add(row["contract_id"])
 
     seen: set[str] = set()
-    with open(DRY_RUN_LOG) as f:
+    with open(trade_log) as f:
         for row in csv.DictReader(f):
             cid = row.get("contract_id", "")
             if not cid:
