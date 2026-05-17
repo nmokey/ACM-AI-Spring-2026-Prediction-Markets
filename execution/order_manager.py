@@ -37,22 +37,76 @@ class OrderManager:
     def __init__(self) -> None:
         self.mode = CONFIG["trading"]["mode"]
         self.kalshi = KalshiClient()
-        self._open_positions: dict[str, float] = {}  # contract_id → dollars at risk
-        # Live mode only: order_id per open position for fill-status polling.
-        self._order_ids: dict[str, str] = {}         # contract_id → kalshi order_id
-        logger.info(f"OrderManager initialized in {self.mode.upper()} mode")
+        self._open_positions: dict[str, float] = {}
+        self._order_ids: dict[str, str] = {}
+        self._realized_pnl: float = 0.0
+        self._restore_open_positions()
+        logger.info(f"OrderManager initialized in {self.mode.upper()} mode with {len(self._open_positions)} restored positions")
+
+    def _restore_open_positions(self) -> None:
+        """
+        On startup, reload open positions from the trade log so restarts don't
+        re-enter the same contracts. A position is considered open if it appears
+        in the entry log but not yet in the resolved log.
+        """
+        entry_log = Path(CONFIG["data"]["dry_run_log_path"])
+        resolved_log = Path(CONFIG["data"]["resolved_log_path"])
+
+        if not entry_log.exists():
+            return
+
+        entered: dict[str, float] = {}  # contract_id → dollars_at_risk (limit_price * size / 100)
+        with open(entry_log) as f:
+            for row in csv.DictReader(f):
+                cid = row.get("contract_id", "")
+                if cid:
+                    # Reconstruct dollars_at_risk from size × price
+                    try:
+                        dollars = int(row["size"]) * int(row["limit_price"]) / 100
+                    except (KeyError, ValueError):
+                        dollars = 1.0
+                    entered[cid] = dollars
+
+        resolved: set[str] = set()
+        if resolved_log.exists():
+            with open(resolved_log) as f:
+                for row in csv.DictReader(f):
+                    cid = row.get("contract_id", "")
+                    if cid:
+                        resolved.add(cid)
+
+        for cid, dollars in entered.items():
+            if cid not in resolved:
+                self._open_positions[cid] = dollars
+
+        if resolved_log.exists():
+            with open(resolved_log) as f:
+                for row in csv.DictReader(f):
+                    try:
+                        self._realized_pnl += float(row.get("pnl_dollars", 0))
+                    except ValueError:
+                        pass
 
     @property
     def open_positions(self) -> dict[str, float]:
         return self._open_positions
 
+    _DRY_RUN_STARTING_BALANCE = 100.0
+
     @property
     def account_balance(self) -> float:
         """Return current account balance in dollars."""
         if self.mode == "dry_run":
-            return 100.0
+            return self._dry_run_balance
         resp = self.kalshi._get("/portfolio/balance")
         return resp["balance"] / 100
+
+    @property
+    def _dry_run_balance(self) -> float:
+        """Simulate balance: starting cash minus open position cost plus realized P&L."""
+        open_cost = sum(self._open_positions.values())
+        realized = self._realized_pnl
+        return self._DRY_RUN_STARTING_BALANCE - open_cost + realized
 
     def submit_order(
         self,
@@ -172,11 +226,14 @@ class OrderManager:
                 logger.warning("Could not fetch market %s: %s", contract_id, e)
                 continue
 
-            if market.get("status") != "finalized":
+            status = market.get("status", "")
+            # "finalized" = fully settled; "closed" = trading ended, result may already be posted
+            if status not in ("finalized", "closed"):
                 continue
 
             result = (market.get("result") or "").lower()
             if result not in ("yes", "no"):
+                # closed but result not posted yet — skip until next poll
                 continue
 
             entry = self._get_log_entry(contract_id)
@@ -187,6 +244,8 @@ class OrderManager:
             won = (side.lower() == result)
             pnl = size * (1.0 - entry_price_cents / 100) if won else -size * (entry_price_cents / 100)
 
+            pnl_rounded = round(pnl, 2)
+            self._realized_pnl += pnl_rounded
             resolved.append({
                 "contract_id": contract_id,
                 "side": side,
@@ -194,7 +253,7 @@ class OrderManager:
                 "entry_price_cents": entry_price_cents,
                 "result": result,
                 "won": won,
-                "pnl_dollars": round(pnl, 2),
+                "pnl_dollars": pnl_rounded,
             })
             self.clear_position(contract_id)
             logger.info("Resolved %s → %s (%s)  P&L: $%.2f",

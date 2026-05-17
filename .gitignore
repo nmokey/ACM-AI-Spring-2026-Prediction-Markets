@@ -21,8 +21,12 @@ graphify-out/
 !logs/.gitkeep
 !signals/.gitkeep
 
-# Notebooks — keep .ipynb but ignore checkpoints
+# NLP cache — generated artifact, changes every 30 min
+nlp/sentiment.json
+
+# Notebooks — keep .ipynb but ignore checkpoints and executed copies
 .ipynb_checkpoints/
+*_executed.ipynb
 
 # OS
 .DS_Store

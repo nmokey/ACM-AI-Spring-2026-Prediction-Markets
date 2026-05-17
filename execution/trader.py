@@ -3,8 +3,8 @@ execution/trader.py
 ─────────────────────
 Main trading loop with live terminal dashboard.
 
-Renders a persistent status bar at the bottom of the terminal showing
-model metrics and trade stats, with a scrolling trade log above it.
+Uses a terminal scroll region to keep the status panel pinned at the bottom
+while trade log lines scroll naturally above it.
 
 Run via: python -m execution.trader  or  bash scripts/run_bot.sh
 """
@@ -46,6 +46,10 @@ _RESOLVED_FIELDS = [
     "entry_price_cents", "result", "won", "pnl_dollars", "mode",
 ]
 
+# Number of lines the status panel occupies at the bottom.
+# Must match the number of lines _build_dashboard() produces.
+_PANEL_ROWS = 11
+
 
 def _log_resolved(events: list[dict], mode: str) -> None:
     if not events:
@@ -69,19 +73,105 @@ def _log_resolved(events: list[dict], mode: str) -> None:
             })
 
 
-# ── Terminal dashboard ────────────────────────────────────────────────────────
+# ── Terminal display helpers ──────────────────────────────────────────────────
 
-_DASHBOARD_ROWS = 12
+def _term_size() -> tuple[int, int]:
+    s = shutil.get_terminal_size((120, 40))
+    return s.columns, s.lines
 
-# In-memory position ledger: contract_id → entry metadata
-_open_book: dict[str, dict] = {}
+
+def _set_scroll_region(top: int, bottom: int) -> None:
+    """Set terminal scroll region to rows top..bottom (1-based)."""
+    sys.stdout.write(f"\033[{top};{bottom}r")
+
+
+def _move_to(row: int, col: int = 1) -> None:
+    sys.stdout.write(f"\033[{row};{col}H")
+
+
+def _clear_line() -> None:
+    sys.stdout.write("\033[2K")
+
+
+def _init_display() -> None:
+    """Reserve the bottom _PANEL_ROWS lines as a fixed status panel."""
+    w, h = _term_size()
+    # Clear screen, set scroll region to all rows above the panel
+    sys.stdout.write("\033[2J")           # clear screen
+    _set_scroll_region(1, h - _PANEL_ROWS)
+    _move_to(h - _PANEL_ROWS, 1)         # park cursor just above panel
+    sys.stdout.flush()
+
+
+def _print_log(msg: str) -> None:
+    """Print a line into the scroll region — terminal scrolls it naturally."""
+    w, h = _term_size()
+    # Ensure cursor is inside scroll region before writing
+    sys.stdout.write(f"\033[{h - _PANEL_ROWS};1H")
+    # Truncate to terminal width to avoid accidental wrap into panel
+    sys.stdout.write(f"\r{msg[:w]}\n")
+    sys.stdout.flush()
+
+
+def _build_dashboard(stats: dict, mode: str, next_poll: float) -> list[str]:
+    w, _ = _term_size()
+    now = datetime.now(timezone.utc).strftime("%m-%d %H:%M UTC")
+    secs_left = max(0, int(next_poll - time.time()))
+    mode_label = "DRY RUN" if mode == "dry_run" else "  LIVE "
+    sep = "─" * w
+
+    n_closed = stats["closed"]
+    win_str = (
+        f"{stats['wins']}W / {stats['losses']}L  ({stats['win_rate']:.0f}% win)"
+        if n_closed else "awaiting resolutions"
+    )
+    realized = stats["realized_pnl"]
+    open_ev  = stats["open_ev"]
+    pnl_str  = f"realized ${realized:+.2f}  |  open EV ${open_ev:+.2f}"
+
+    # All-time category + side counts (open + closed)
+    cat_str  = "  ".join(
+        f"{cat}:{n}" for cat, n in sorted(stats["all_cat"].items()) if n > 0
+    ) or "none"
+    side_str = (
+        f"YES:{stats['all_side'].get('YES', 0)}  "
+        f"NO:{stats['all_side'].get('NO', 0)}"
+    )
+
+    return [
+        sep,
+        f" {mode_label}  {now}  next poll in {secs_left:>3}s  |  balance: ${stats['balance']:.2f}",
+        sep,
+        f"  Open: {stats['open']:>3}   Closed: {n_closed:>3}   {win_str}",
+        f"  P&L : {pnl_str}",
+        f"  Edge: avg open {stats['avg_edge']:.3f}",
+        sep,
+        f"  Sides   (all-time): {side_str}",
+        f"  Markets (all-time): {cat_str}",
+        sep,
+    ]
+    # _PANEL_ROWS must equal len(lines) + 1 (the blank line between scroll region and panel)
+
+
+def _render_dashboard(stats: dict, mode: str, next_poll: float) -> None:
+    w, h = _term_size()
+    lines = _build_dashboard(stats, mode, next_poll)
+    # Panel starts at row h - _PANEL_ROWS + 1 (leave one blank separator row)
+    panel_start = h - _PANEL_ROWS + 1
+    for i, line in enumerate(lines):
+        _move_to(panel_start + i)
+        _clear_line()
+        sys.stdout.write(line[:w])
+    sys.stdout.flush()
+
+
+# ── Position tracking ─────────────────────────────────────────────────────────
+
+_open_book: dict[str, dict] = {}   # contract_id → entry metadata
+_all_trades: list[dict] = []       # every trade ever placed this session
 _realized: list[float] = []
 _wins = 0
 _losses = 0
-
-
-def _term_width() -> int:
-    return shutil.get_terminal_size((100, 24)).columns
 
 
 def _ticker_category(contract_id: str) -> str:
@@ -101,108 +191,62 @@ def _ticker_category(contract_id: str) -> str:
     return "other"
 
 
+def _compute_stats(order_manager: OrderManager) -> dict:
+    open_ev      = sum(e["edge"] * e["size"] * (e["limit_price"] / 100) for e in _open_book.values())
+    realized_pnl = sum(_realized)
+    n_closed     = _wins + _losses
+    win_rate     = (_wins / n_closed * 100) if n_closed else 0.0
+
+    # All-time counts from _all_trades list
+    all_cat:  dict[str, int] = defaultdict(int)
+    all_side: dict[str, int] = defaultdict(int)
+    for t in _all_trades:
+        all_cat[_ticker_category(t["contract_id"])] += 1
+        all_side[t["side"]] += 1
+
+    return {
+        "open":         len(_open_book),
+        "closed":       n_closed,
+        "wins":         _wins,
+        "losses":       _losses,
+        "win_rate":     win_rate,
+        "open_ev":      open_ev,
+        "realized_pnl": realized_pnl,
+        "avg_edge":     (
+            sum(e["edge"] for e in _open_book.values()) / len(_open_book)
+            if _open_book else 0.0
+        ),
+        "all_cat":      dict(all_cat),
+        "all_side":     dict(all_side),
+        "balance":      order_manager.account_balance,
+    }
+
+
 def _sync_closed_positions(resolution_events: list[dict], mode: str) -> None:
     global _wins, _losses
     for ev in resolution_events:
         cid = ev["contract_id"]
         pnl = ev["pnl_dollars"]
         _realized.append(pnl)
+        entry = _open_book.pop(cid, {})
         if ev["won"]:
             _wins += 1
+            label = "WIN "
         else:
             _losses += 1
-        _open_book.pop(cid, None)
-        label = "WIN " if ev["won"] else "LOSS"
+            label = "LOSS"
+        cat = _ticker_category(cid)
         _print_log(
-            f"[{_ts()}] {label} {ev['side']:>3} {cid:<42} "
-            f"result={ev['result'].upper()}  P&L=${pnl:>+.2f}"
+            f"[{_ts()}] {label} {ev['side']:>3} {cid}  "
+            f"result={ev['result'].upper()}  P&L=${pnl:+.2f}  [{cat}]"
         )
+        if entry:
+            _print_log(
+                f"          entry: p_model={entry.get('p_model', 0):.3f}  "
+                f"mkt_at_entry={entry.get('market_price', 0):.3f}  "
+                f"edge={entry.get('edge', 0):.3f}  sz={entry.get('size', 0)}"
+            )
     _log_resolved(resolution_events, mode)
-
-
-def _compute_stats(order_manager: OrderManager) -> dict:
-    open_ev = sum(
-        e["edge"] * e["size"] * (e["limit_price"] / 100)
-        for e in _open_book.values()
-    )
-    realized_pnl = sum(_realized)
-    n_closed = _wins + _losses
-    win_rate = (_wins / n_closed * 100) if n_closed else 0.0
-
-    by_cat: dict[str, int] = defaultdict(int)
-    by_side: dict[str, int] = defaultdict(int)
-    for cid, e in _open_book.items():
-        by_cat[_ticker_category(cid)] += 1
-        by_side[e["side"]] += 1
-
-    return {
-        "open": len(_open_book),
-        "closed": n_closed,
-        "wins": _wins,
-        "losses": _losses,
-        "win_rate": win_rate,
-        "open_ev": open_ev,
-        "realized_pnl": realized_pnl,
-        "avg_edge": (
-            sum(e["edge"] for e in _open_book.values()) / len(_open_book)
-            if _open_book else 0.0
-        ),
-        "by_cat": dict(by_cat),
-        "by_side": dict(by_side),
-        "balance": order_manager.account_balance,
-    }
-
-
-def _render_dashboard(stats: dict, mode: str, next_poll: float) -> None:
-    w = _term_width()
-    now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-    secs_left = max(0, int(next_poll - time.time()))
-    mode_label = "DRY RUN" if mode == "dry_run" else "  LIVE "
-
-    sep = "─" * w
-
-    cat_str = "  ".join(
-        f"{cat}:{n}" for cat, n in sorted(stats["by_cat"].items()) if n > 0
-    ) or "none"
-    side_str = f"YES:{stats['by_side'].get('YES', 0)}  NO:{stats['by_side'].get('NO', 0)}"
-
-    n_closed = stats["closed"]
-    win_str = (
-        f"{stats['wins']}W / {stats['losses']}L  ({stats['win_rate']:.0f}% win)"
-        if n_closed else "no resolved contracts yet"
-    )
-    pnl_str = f"realized ${stats['realized_pnl']:>+.2f}  |  open EV ${stats['open_ev']:>+.2f}"
-
-    lines = [
-        sep,
-        f" {mode_label}  {now}  next poll in {secs_left:>3}s  |  balance: ${stats['balance']:.2f}",
-        sep,
-        f"  Open positions : {stats['open']:>3}   Closed: {n_closed:>3}   {win_str}",
-        f"  P&L            : {pnl_str}",
-        f"  Avg edge (open): {stats['avg_edge']:.3f}",
-        sep,
-        f"  Sides  : {side_str}",
-        f"  Markets: {cat_str}",
-        sep,
-    ]
-
-    sys.stdout.write(f"\033[{_DASHBOARD_ROWS}A\r")
-    for line in lines:
-        sys.stdout.write(f"\033[2K{line}\n")
-    for _ in range(_DASHBOARD_ROWS - len(lines)):
-        sys.stdout.write(f"\033[2K\n")
-    sys.stdout.flush()
-
-
-def _print_log(msg: str) -> None:
-    sys.stdout.write(f"\033[{_DASHBOARD_ROWS}A\r\033[2K{msg}\n")
-    sys.stdout.write(f"\033[{_DASHBOARD_ROWS - 1}B")
-    sys.stdout.flush()
-
-
-def _init_display() -> None:
-    sys.stdout.write("\n" * _DASHBOARD_ROWS)
-    sys.stdout.flush()
 
 
 # ── Trading logic ─────────────────────────────────────────────────────────────
@@ -263,35 +307,106 @@ def run_once(order_manager: OrderManager) -> int:
         )
         if record is not None:
             n_placed += 1
-            cat = _ticker_category(contract_id)
+            cat  = _ticker_category(contract_id)
             edge = record.edge
-            _open_book[contract_id] = {
-                "side": side,
-                "size": record.size,
-                "limit_price": record.limit_price,
-                "p_model": p_model,
+            kelly_pct = (bet_dollars / balance * 100) if balance > 0 else 0
+            book_entry = {
+                "contract_id":  contract_id,
+                "side":         side,
+                "size":         record.size,
+                "limit_price":  record.limit_price,
+                "p_model":      p_model,
                 "market_price": market_price,
-                "edge": edge,
+                "edge":         edge,
             }
+            _open_book[contract_id] = book_entry
+            _all_trades.append(book_entry)
+
+            # Two-line entry: what was placed + why
             _print_log(
-                f"[{_ts()}] OPEN  {side:>3} {contract_id:<42} "
-                f"p={p_model:.3f} mkt={market_price:.3f} "
-                f"edge={edge:.3f} sz={record.size} [{cat}]"
+                f"[{_ts()}] OPEN {side:>3} {contract_id}  sz={record.size}  "
+                f"@ {record.limit_price}¢  [{cat}]"
+            )
+            _print_log(
+                f"          p_model={p_model:.3f}  mkt={market_price:.3f}  "
+                f"edge={edge:.3f}  conf={confidence:.3f}  "
+                f"kelly=${bet_dollars:.2f} ({kelly_pct:.1f}%)"
             )
 
     resolution_events = order_manager.check_resolutions()
     _sync_closed_positions(resolution_events, order_manager.mode)
 
     if n_placed == 0:
-        _print_log(f"[{_ts()}] pass — no new trades  (open: {len(order_manager.open_positions)})")
+        _print_log(
+            f"[{_ts()}] poll — no new trades  "
+            f"(open={len(order_manager.open_positions)}  closed={_wins + _losses})"
+        )
     else:
-        _print_log(f"[{_ts()}] pass — {n_placed} new order(s)  (open: {len(order_manager.open_positions)})")
+        _print_log(f"[{_ts()}] poll — {n_placed} new order(s) placed")
 
     return n_placed
 
 
 def _ts() -> str:
-    return datetime.now(timezone.utc).strftime("%H:%M:%S")
+    return datetime.now(timezone.utc).strftime("%m-%d %H:%M:%S")
+
+
+def _restore_open_book(order_manager: OrderManager) -> None:
+    """On startup, rebuild _open_book and _all_trades from the CSV logs."""
+    if not DRY_RUN_LOG.exists():
+        return
+
+    resolved: set[str] = set()
+    if RESOLVED_LOG.exists():
+        with open(RESOLVED_LOG) as f:
+            for row in csv.DictReader(f):
+                if row.get("contract_id"):
+                    resolved.add(row["contract_id"])
+
+    seen: set[str] = set()
+    with open(DRY_RUN_LOG) as f:
+        for row in csv.DictReader(f):
+            cid = row.get("contract_id", "")
+            if not cid:
+                continue
+            try:
+                entry = {
+                    "contract_id":  cid,
+                    "side":         row["side"],
+                    "size":         int(row["size"]),
+                    "limit_price":  int(row["limit_price"]),
+                    "p_model":      float(row["p_model"]),
+                    "market_price": float(row["market_price"]),
+                    "edge":         float(row["edge"]),
+                }
+            except (KeyError, ValueError):
+                continue
+            # _all_trades gets every unique entry
+            if cid not in seen:
+                seen.add(cid)
+                _all_trades.append(entry)
+            # _open_book only gets unresolved ones
+            if cid not in resolved:
+                _open_book[cid] = entry
+
+    # Also restore _wins/_losses from resolved log
+    global _wins, _losses
+    if RESOLVED_LOG.exists():
+        with open(RESOLVED_LOG) as f:
+            for row in csv.DictReader(f):
+                pnl = float(row.get("pnl_dollars", 0))
+                _realized.append(pnl)
+                won = row.get("won", "").lower() == "true"
+                if won:
+                    _wins += 1
+                else:
+                    _losses += 1
+
+    if _open_book or _wins or _losses:
+        _print_log(
+            f"[{_ts()}] restored {len(_open_book)} open, "
+            f"{_wins}W/{_losses}L from logs"
+        )
 
 
 def main() -> None:
@@ -301,10 +416,11 @@ def main() -> None:
     mode = TRADING_CFG["mode"]
     poll = PIPELINE_CFG["poll_interval_sec"]
 
-    sys.stdout.write(f"Trader starting in {mode.upper()} mode — poll every {poll}s\n")
     _init_display()
+    _print_log(f"[{_ts()}] Trader starting — {mode.upper()} mode, poll every {poll}s")
 
     order_manager = OrderManager()
+    _restore_open_book(order_manager)
     next_poll = time.time()
 
     while True:
