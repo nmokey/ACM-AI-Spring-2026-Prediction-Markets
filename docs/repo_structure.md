@@ -34,12 +34,13 @@ prediction-markets/
 ├── nlp/                    🧠  TEAM 2 — Modeling & Intelligence (NLP half)
 │   ├── news_client.py          GNews + GDELT fallback, SQLite store, _extract_query
 │   ├── relevance.py            Cosine similarity scorer (all-MiniLM-L6-v2)
-│   └── sentiment.py            FinBERT / VADER scoring → nlp/sentiment.json (internal artifact)
+│   ├── sentiment.py            FinBERT / VADER scoring → nlp/sentiment.json (internal artifact)
+│   └── sentiment.json          (gitignored) per-contract sentiment scores, refreshed every 30 min
 │
 ├── models/                 🧠  TEAM 2 — Modeling & Intelligence (Modeling half)
-│   ├── train.py                XGBoost + isotonic calibration, GroupShuffleSplit, class-imbalance weighting
+│   ├── train.py                XGBoost + isotonic calibration, GroupShuffleSplit, --dedup flag
 │   ├── predict.py              Live inference → signals/predictions.json
-│   ├── evaluate.py             Brier score, log-loss, calibration curve, feature importance
+│   ├── evaluate.py             Brier score, log-loss, feature importance → logs/model_metrics.jsonl
 │   └── trained/                (gitignored) serialized model weights
 │       └── xgb_v1.joblib
 │
@@ -47,8 +48,9 @@ prediction-markets/
 │   ├── kelly.py                Fractional Kelly Criterion position sizing
 │   ├── risk.py                 Pre-trade risk checks (edge, confidence, exposure)
 │   ├── order_manager.py        Order submission — the only gateway to Kalshi orders
+│   │                           Tracks open positions; polls resolutions; simulates balance in dry_run
 │   ├── dry_run.py              Mock order logger → logs/dry_run_trades.csv
-│   └── trader.py               Main trading loop (reads predictions → places orders)
+│   └── trader.py               Main trading loop with live terminal dashboard
 │
 ├── signals/                🔗  SHARED — Team 2 writes, Team 3 reads
 │   └── predictions.json
@@ -58,9 +60,9 @@ prediction-markets/
 │   └── metrics.py              Sharpe, Sortino, win rate, max drawdown, go/no-go verdict
 │
 ├── notebooks/              📓  SHARED (visualization only — not production code)
-│   ├── eda.ipynb               Exploratory analysis of features
-│   ├── model_eval.ipynb        Calibration curve, Brier score comparison
-│   └── backtest_results.ipynb  Backtest P&L, trade log analysis
+│   ├── performance.ipynb       Live P&L, win rate, brier score over time, feature importance drift
+│   ├── backtest_results.ipynb  Backtest P&L, trade log analysis
+│   └── backtest_weather.ipynb  Weather-specific backtest analysis
 │
 ├── scripts/                🛠️  SHARED — operational scripts
 │   ├── run_pipeline.sh         Starts the data + NLP loop on the club server
@@ -74,10 +76,15 @@ prediction-markets/
 │   ├── test_news_client.py
 │   └── test_news_client_init_db.py
 │
-├── config/
-│   └── settings.yaml           Central config — trading mode, risk params, paths
-│
 ├── logs/                       (gitignored) runtime logs
+│   ├── dry_run_trades.csv      Every order placed in dry_run mode
+│   ├── resolved_trades.csv     Every closed position with result and P&L
+│   ├── model_metrics.jsonl     One record per retrain: brier, log-loss, feature importances
+│   └── pipeline.log / bot.log  stdout from tmux sessions
+│
+├── config/
+│   └── settings.yaml           Central config — trading mode, risk params, all file paths
+│
 ├── .env.example                API key template — copy to .env
 └── pyproject.toml              uv dependency manifest
 ```
@@ -88,7 +95,7 @@ prediction-markets/
 
 These are the interfaces **between** teams. Defined as Pydantic models in `data/schema.py`. Do not change that file without a team-wide PR.
 
-> **Note on NLP signals:** `nlp/` and `models/` are both owned by Team 2. Sentiment scores are an **internal Team 2 artifact** — they flow from `nlp/sentiment.py` into `models/predict.py` at runtime. The only output Team 2 exposes externally is `signals/predictions.json`.
+> **Note on NLP signals:** `nlp/` and `models/` are both owned by Team 2. Sentiment scores are an **internal Team 2 artifact** — they flow from `nlp/sentiment.py` into `data/engineer.py` (joined at snapshot write time) and `models/predict.py` at inference time. The only output Team 2 exposes externally is `signals/predictions.json`.
 
 ### `MarketFeatures` — Team 1 → Team 2 (`data/features/live_features.parquet`, refreshed every 15 min)
 
@@ -110,6 +117,8 @@ These are the interfaces **between** teams. Defined as Pydantic models in `data/
 | precip_prob_new_york | `float` | Today's max precipitation probability 0–100 |
 | precip_prob_los_angeles | `float` | Today's max precipitation probability 0–100 |
 | precip_prob_chicago | `float` | Today's max precipitation probability 0–100 |
+| sentiment_score | `float` | From nlp/sentiment.json, joined at engineer write time |
+| sentiment_confidence | `float` | From nlp/sentiment.json, joined at engineer write time |
 | fetched_at | `str` | ISO 8601 UTC timestamp of snapshot |
 
 ### `PredictionSignal` — Team 2 → Team 3 (`signals/predictions.json`, refreshed every 15 min)
@@ -144,3 +153,19 @@ These are the interfaces **between** teams. Defined as Pydantic models in `data/
 | market_price | `float` | [0.0, 1.0] | Market YES price at time of trade |
 | edge | `float` | | `\|p_model − market_price\|` |
 | mode | `str` | `"dry_run"` / `"live"` | Trading mode |
+
+### `resolved_trades.csv` — Internal Team 3 (`logs/resolved_trades.csv`)
+
+One row written per position when Kalshi reports the contract as settled.
+
+| Field | Description |
+|---|---|
+| timestamp | UTC time resolution was detected |
+| contract_id | Kalshi market ticker |
+| side | `"YES"` or `"NO"` |
+| size | Number of contracts held |
+| entry_price_cents | Price paid, in Kalshi cents |
+| result | `"yes"` or `"no"` (Kalshi's reported outcome) |
+| won | `True` if `side == result` |
+| pnl_dollars | `size × (1 − entry_price/100)` if won, else `−size × (entry_price/100)` |
+| mode | `"dry_run"` or `"live"` |
