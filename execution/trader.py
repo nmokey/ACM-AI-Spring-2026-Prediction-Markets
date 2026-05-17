@@ -48,7 +48,7 @@ _RESOLVED_FIELDS = [
 
 # Number of lines the status panel occupies at the bottom.
 # Must match the number of lines _build_dashboard() produces.
-_PANEL_ROWS = 11
+_PANEL_ROWS = 10
 
 
 def _log_resolved(events: list[dict], mode: str) -> None:
@@ -76,6 +76,21 @@ def _log_resolved(events: list[dict], mode: str) -> None:
 # ── Terminal display helpers ──────────────────────────────────────────────────
 
 def _term_size() -> tuple[int, int]:
+    # Try each std fd in turn; stdout/stderr may be piped (tee) so try stdin too.
+    import os
+    for fd in (sys.stdout.fileno(), sys.stderr.fileno(), sys.stdin.fileno()):
+        try:
+            s = os.get_terminal_size(fd)
+            return s.columns, s.lines
+        except OSError:
+            continue
+    # Last resort: open /dev/tty directly.
+    try:
+        with open("/dev/tty") as tty:
+            s = os.get_terminal_size(tty.fileno())
+            return s.columns, s.lines
+    except OSError:
+        pass
     s = shutil.get_terminal_size((120, 40))
     return s.columns, s.lines
 
@@ -96,20 +111,18 @@ def _clear_line() -> None:
 def _init_display() -> None:
     """Reserve the bottom _PANEL_ROWS lines as a fixed status panel."""
     w, h = _term_size()
-    # Clear screen, set scroll region to all rows above the panel
-    sys.stdout.write("\033[2J")           # clear screen
+    sys.stdout.write("\033[2J")                    # clear entire screen
+    sys.stdout.write("\033[3J")                    # clear scrollback buffer
     _set_scroll_region(1, h - _PANEL_ROWS)
-    _move_to(h - _PANEL_ROWS, 1)         # park cursor just above panel
+    _move_to(h - _PANEL_ROWS, 1)                  # park cursor at scroll region bottom
     sys.stdout.flush()
 
 
 def _print_log(msg: str) -> None:
     """Print a line into the scroll region — terminal scrolls it naturally."""
     w, h = _term_size()
-    # Ensure cursor is inside scroll region before writing
-    sys.stdout.write(f"\033[{h - _PANEL_ROWS};1H")
-    # Truncate to terminal width to avoid accidental wrap into panel
-    sys.stdout.write(f"\r{msg[:w]}\n")
+    # Position at the last row of the scroll region, then write + newline to scroll.
+    sys.stdout.write(f"\033[{h - _PANEL_ROWS};1H\033[2K{msg[:w]}\n")
     sys.stdout.flush()
 
 
@@ -156,12 +169,14 @@ def _build_dashboard(stats: dict, mode: str, next_poll: float) -> list[str]:
 def _render_dashboard(stats: dict, mode: str, next_poll: float) -> None:
     w, h = _term_size()
     lines = _build_dashboard(stats, mode, next_poll)
-    # Panel starts at row h - _PANEL_ROWS + 1 (leave one blank separator row)
+    # Panel occupies the last _PANEL_ROWS lines; scroll region ends just above it.
     panel_start = h - _PANEL_ROWS + 1
     for i, line in enumerate(lines):
         _move_to(panel_start + i)
         _clear_line()
         sys.stdout.write(line[:w])
+    # Return cursor to scroll region so log lines print in the right place.
+    _move_to(h - _PANEL_ROWS, 1)
     sys.stdout.flush()
 
 

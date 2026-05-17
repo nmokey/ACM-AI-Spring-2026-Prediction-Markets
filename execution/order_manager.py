@@ -103,10 +103,8 @@ class OrderManager:
 
     @property
     def _dry_run_balance(self) -> float:
-        """Simulate balance: starting cash minus open position cost plus realized P&L."""
-        open_cost = sum(self._open_positions.values())
-        realized = self._realized_pnl
-        return self._DRY_RUN_STARTING_BALANCE - open_cost + realized
+        """Simulate balance: starting cash adjusted by closed-trade P&L only."""
+        return self._DRY_RUN_STARTING_BALANCE + self._realized_pnl
 
     def submit_order(
         self,
