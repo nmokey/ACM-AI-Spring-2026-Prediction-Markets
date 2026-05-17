@@ -50,6 +50,11 @@ _RESOLVED_FIELDS = [
 # Must match the number of lines _build_dashboard() produces.
 _PANEL_ROWS = 10
 
+# Terminal dimensions captured once at startup and reused everywhere.
+# Re-querying mid-session causes the panel to drift to different row offsets.
+_TERM_W: int = 120
+_TERM_H: int = 40
+
 
 def _log_resolved(events: list[dict], mode: str) -> None:
     if not events:
@@ -75,8 +80,8 @@ def _log_resolved(events: list[dict], mode: str) -> None:
 
 # ── Terminal display helpers ──────────────────────────────────────────────────
 
-def _term_size() -> tuple[int, int]:
-    # Try each std fd in turn; stdout/stderr may be piped (tee) so try stdin too.
+def _query_term_size() -> tuple[int, int]:
+    """Query the real tty size, trying each fd and /dev/tty as fallbacks."""
     import os
     for fd in (sys.stdout.fileno(), sys.stderr.fileno(), sys.stdin.fileno()):
         try:
@@ -84,7 +89,6 @@ def _term_size() -> tuple[int, int]:
             return s.columns, s.lines
         except OSError:
             continue
-    # Last resort: open /dev/tty directly.
     try:
         with open("/dev/tty") as tty:
             s = os.get_terminal_size(tty.fileno())
@@ -93,6 +97,11 @@ def _term_size() -> tuple[int, int]:
         pass
     s = shutil.get_terminal_size((120, 40))
     return s.columns, s.lines
+
+
+def _term_size() -> tuple[int, int]:
+    """Return the terminal dimensions captured at startup."""
+    return _TERM_W, _TERM_H
 
 
 def _set_scroll_region(top: int, bottom: int) -> None:
@@ -109,20 +118,22 @@ def _clear_line() -> None:
 
 
 def _init_display() -> None:
-    """Reserve the bottom _PANEL_ROWS lines as a fixed status panel."""
-    w, h = _term_size()
-    sys.stdout.write("\033[2J")                    # clear entire screen
-    sys.stdout.write("\033[3J")                    # clear scrollback buffer
+    """Capture terminal size once, then set up the fixed panel and scroll region."""
+    global _TERM_W, _TERM_H
+    _TERM_W, _TERM_H = _query_term_size()
+    w, h = _TERM_W, _TERM_H
+    sys.stdout.write("\033[2J")           # clear screen
+    sys.stdout.write("\033[3J")           # clear scrollback buffer
     _set_scroll_region(1, h - _PANEL_ROWS)
-    _move_to(h - _PANEL_ROWS, 1)                  # park cursor at scroll region bottom
+    _move_to(1, 1)                        # park cursor at top of scroll region
     sys.stdout.flush()
 
 
 def _print_log(msg: str) -> None:
-    """Print a line into the scroll region — terminal scrolls it naturally."""
-    w, h = _term_size()
-    # Position at the last row of the scroll region, then write + newline to scroll.
-    sys.stdout.write(f"\033[{h - _PANEL_ROWS};1H\033[2K{msg[:w]}\n")
+    """Write a log line; the scroll region scrolls it upward naturally."""
+    w = _TERM_W
+    # \r ensures we start at column 1; \n triggers the scroll region scroll.
+    sys.stdout.write(f"\r{msg[:w]}\n")
     sys.stdout.flush()
 
 
@@ -167,16 +178,16 @@ def _build_dashboard(stats: dict, mode: str, next_poll: float) -> list[str]:
 
 
 def _render_dashboard(stats: dict, mode: str, next_poll: float) -> None:
-    w, h = _term_size()
+    w, h = _TERM_W, _TERM_H
     lines = _build_dashboard(stats, mode, next_poll)
-    # Panel occupies the last _PANEL_ROWS lines; scroll region ends just above it.
+    # Panel occupies the last _PANEL_ROWS rows (outside the scroll region).
     panel_start = h - _PANEL_ROWS + 1
     for i, line in enumerate(lines):
         _move_to(panel_start + i)
         _clear_line()
         sys.stdout.write(line[:w])
-    # Return cursor to scroll region so log lines print in the right place.
-    _move_to(h - _PANEL_ROWS, 1)
+    # Park cursor at top of scroll region so future _print_log calls land there.
+    _move_to(1, 1)
     sys.stdout.flush()
 
 
