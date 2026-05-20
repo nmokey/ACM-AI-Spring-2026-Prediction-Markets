@@ -34,8 +34,21 @@ TRADING_CFG = CONFIG["trading"]
 DATA_CFG = CONFIG["data"]
 
 _PREDICTIONS_PATH = Path(__file__).parents[1] / DATA_CFG["predictions_path"]
-_MODEL_PATH = Path(__file__).parents[1] / "models" / "trained" / "xgb_v1.joblib"
 _SENTIMENT_PATH = Path(__file__).parents[1] / DATA_CFG["sentiment_path"]
+
+# If the model/snapshots live on shared scratch, override these paths.
+# Otherwise they fall back to the local project directory.
+_SCRATCH_DIR = Path("/path/to/scratch/acm-ai-prediction-markets")
+_MODEL_PATH = (
+    _SCRATCH_DIR / "xgb_v1.joblib"
+    if _SCRATCH_DIR.exists()
+    else Path(__file__).parents[1] / "models" / "trained" / "xgb_v1.joblib"
+)
+_SNAPSHOTS_PATH = (
+    _SCRATCH_DIR / "snapshots.parquet"
+    if _SCRATCH_DIR.exists()
+    else Path(__file__).parents[1] / DATA_CFG["snapshots_path"]
+)
 
 
 def _load_dummy_trades(
@@ -312,7 +325,12 @@ def run_backtest(
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    trades = run_backtest()
+    if _SNAPSHOTS_PATH.exists():
+        logger.info("Using snapshots at %s", _SNAPSHOTS_PATH)
+        trades = run_backtest(features_path=_SNAPSHOTS_PATH)
+    else:
+        logger.info("No snapshots found — running in dummy mode")
+        trades = run_backtest()
     if not trades.empty:
         Path("logs").mkdir(exist_ok=True)
         trades.to_csv("logs/backtest_trades.csv", index=False)
