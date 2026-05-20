@@ -16,12 +16,14 @@ import logging
 import random
 from pathlib import Path
 
+import joblib
 import pandas as pd
 import yaml
 
 from execution.kelly import kelly_fraction, dollars_to_contracts
 from execution.risk import check_trade
 from backtest.metrics import compute_metrics, print_metrics
+from models.train import FEATURE_COLS
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,21 @@ TRADING_CFG = CONFIG["trading"]
 DATA_CFG = CONFIG["data"]
 
 _PREDICTIONS_PATH = Path(__file__).parents[1] / DATA_CFG["predictions_path"]
+_SENTIMENT_PATH = Path(__file__).parents[1] / DATA_CFG["sentiment_path"]
+
+# If the model/snapshots live on shared scratch, override these paths.
+# Otherwise they fall back to the local project directory.
+_SCRATCH_DIR = Path("/path/to/scratch/acm-ai-prediction-markets")
+_MODEL_PATH = (
+    _SCRATCH_DIR / "xgb_v1.joblib"
+    if _SCRATCH_DIR.exists()
+    else Path(__file__).parents[1] / "models" / "trained" / "xgb_v1.joblib"
+)
+_SNAPSHOTS_PATH = (
+    _SCRATCH_DIR / "snapshots.parquet"
+    if _SCRATCH_DIR.exists()
+    else Path(__file__).parents[1] / DATA_CFG["snapshots_path"]
+)
 
 
 def _load_dummy_trades(
@@ -129,11 +146,143 @@ def _load_dummy_trades(
     return pd.DataFrame(trade_log)
 
 
+def _run_real_backtest(
+    features_path: Path,
+    sentiment_path: Path | None,
+    model,
+    starting_balance: float,
+) -> pd.DataFrame:
+    """Simulate trading on real historical resolved contracts."""
+    # 1. Load model from disk if not supplied
+    if model is None:
+        if not _MODEL_PATH.exists():
+            raise FileNotFoundError(f"Model not found at {_MODEL_PATH} — run models/train.py first")
+        model = joblib.load(_MODEL_PATH)
+        logger.info("Loaded model from %s", _MODEL_PATH)
+
+    # 2. Load features, keep only rows with a real label
+    df = pd.read_parquet(features_path)
+    before = len(df)
+    df = df.dropna(subset=["resolved_yes"])
+    logger.info("Loaded %d labeled rows (dropped %d unresolved) from %s", len(df), before - len(df), features_path)
+
+    if df.empty:
+        logger.warning("No resolved contracts in %s — nothing to backtest", features_path)
+        return pd.DataFrame()
+
+    # 3. One row per contract: last snapshot before resolution gives the most
+    #    informed features without look-ahead bias
+    df = df.sort_values("fetched_at").groupby("contract_id").last().reset_index()
+    logger.info("%d unique resolved contracts after dedup", len(df))
+
+    # 4. Join sentiment (default 0.0 when missing)
+    resolved_sentiment = sentiment_path or _SENTIMENT_PATH
+    if resolved_sentiment and Path(resolved_sentiment).exists():
+        with open(resolved_sentiment) as f:
+            raw = json.load(f)
+        sent_df = pd.DataFrame.from_dict(raw, orient="index")[
+            ["sentiment_score", "sentiment_confidence"]
+        ]
+        sent_df.index.name = "contract_id"
+        df = df.drop(columns=["sentiment_score", "sentiment_confidence"], errors="ignore")
+        df = df.set_index("contract_id").join(sent_df, how="left").reset_index()
+
+    for col in FEATURE_COLS:
+        if col not in df.columns:
+            df[col] = 0.0
+    df[FEATURE_COLS] = df[FEATURE_COLS].fillna(0.0)
+
+    # 5. Model inference
+    X = df[FEATURE_COLS].values
+    df["p_model"] = model.predict_proba(X)[:, 1]
+    df["confidence"] = (df["p_model"] - 0.5).abs() * 2
+
+    # 6. Chronological order so balance evolves correctly
+    df = df.sort_values("fetched_at").reset_index(drop=True)
+
+    # 7. Simulation loop — identical logic to _load_dummy_trades but uses
+    #    real market_price and real resolved_yes instead of synthetic values
+    balance = starting_balance
+    cumulative_pnl = 0.0
+    trade_log = []
+    open_positions: dict[str, float] = {}
+
+    for _, row in df.iterrows():
+        contract_id: str = row["contract_id"]
+        p_model: float = row["p_model"]
+        market_price = row.get("market_price")
+        confidence: float = row["confidence"]
+        resolved_yes: int = int(row["resolved_yes"])
+
+        if market_price is None or pd.isna(market_price):
+            logger.debug("Skipping %s — missing market_price", contract_id)
+            continue
+
+        risk = check_trade(
+            p_model=p_model,
+            market_price=market_price,
+            confidence=confidence,
+            open_positions=open_positions,
+            account_balance=balance,
+        )
+        if not risk.passed:
+            logger.debug("Skipping %s — %s", contract_id, risk.reason)
+            continue
+
+        edge = abs(p_model - market_price)
+
+        bet_dollars, side = kelly_fraction(
+            p_model=p_model,
+            market_price=market_price,
+            bankroll=balance,
+            kelly_multiplier=TRADING_CFG["kelly_fraction"],
+            max_position_pct=TRADING_CFG["max_position_pct"],
+        )
+        if bet_dollars <= 0:
+            continue
+
+        price = market_price if side == "YES" else (1 - market_price)
+        n_contracts = dollars_to_contracts(bet_dollars, price)
+        if n_contracts == 0:
+            continue
+
+        cost = n_contracts * price
+        open_positions[contract_id] = cost
+
+        won = (side == "YES" and resolved_yes == 1) or (side == "NO" and resolved_yes == 0)
+        payout_per_contract = (1 - price) if won else 0.0
+        pnl = n_contracts * payout_per_contract - (0 if won else cost)
+        balance += pnl
+        cumulative_pnl += pnl
+
+        del open_positions[contract_id]
+
+        trade_log.append({
+            "contract_id": contract_id,
+            "timestamp": row.get("fetched_at", ""),
+            "market_category": row.get("market_category", None),
+            "p_model": round(p_model, 4),
+            "market_price": round(market_price, 4),
+            "side": side,
+            "n_contracts": n_contracts,
+            "cost": round(cost, 4),
+            "edge": round(edge, 4),
+            "resolved_yes": resolved_yes,
+            "won": won,
+            "pnl": round(pnl, 4),
+            "balance": round(balance, 2),
+            "cumulative_pnl": round(cumulative_pnl, 4),
+        })
+
+    return pd.DataFrame(trade_log)
+
+
 def run_backtest(
     features_path: str | Path | None = None,
     sentiment_path: str | Path | None = None,
     model=None,
     starting_balance: float = TRADING_CFG["starting_balance"],
+    verbose: bool = True,
 ) -> pd.DataFrame:
     """
     Simulate trading on historical resolved contracts.
@@ -143,6 +292,8 @@ def run_backtest(
         sentiment_path:   path to sentiment.json (optional)
         model:            fitted model with predict_proba(). If None, loads from disk.
         starting_balance: simulated starting bankroll in dollars
+        verbose:          print metrics summary to stdout (default True). Set False
+                          when calling from a notebook and plotting results yourself.
 
     Returns:
         DataFrame of simulated trades with columns:
@@ -152,21 +303,21 @@ def run_backtest(
     When features_path is None and model is None, falls back to dummy mode:
     runs directly from signals/predictions.json with synthetically sampled
     outcomes so the full metrics pipeline can be exercised without real data.
-
-    TODO (Week 6):
-        1. Load the model (joblib.load from models/trained/xgb_v1.joblib)
-        2. Load the features parquet — filter to rows where resolved_yes is not NaN
-        3. Join sentiment signals if available (default 0.0)
-        4. Run model.predict_proba(X)[:, 1] to get p_model per contract
-        5. Replace _load_dummy_trades() with the real simulation loop above
     """
     if features_path is None and model is None:
         logger.info("No features/model provided — running in dummy mode from %s", _PREDICTIONS_PATH)
         trades = _load_dummy_trades(_PREDICTIONS_PATH, starting_balance)
     else:
-        raise NotImplementedError("Real backtest (features + model) not yet implemented — Week 6 task")
+        if features_path is None:
+            raise ValueError("features_path is required when a model is provided")
+        trades = _run_real_backtest(
+            features_path=Path(features_path),
+            sentiment_path=Path(sentiment_path) if sentiment_path else None,
+            model=model,
+            starting_balance=starting_balance,
+        )
 
-    if not trades.empty:
+    if not trades.empty and verbose:
         print_metrics(trades, starting_balance)
 
     return trades
@@ -174,7 +325,12 @@ def run_backtest(
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    trades = run_backtest()
+    if _SNAPSHOTS_PATH.exists():
+        logger.info("Using snapshots at %s", _SNAPSHOTS_PATH)
+        trades = run_backtest(features_path=_SNAPSHOTS_PATH)
+    else:
+        logger.info("No snapshots found — running in dummy mode")
+        trades = run_backtest()
     if not trades.empty:
         Path("logs").mkdir(exist_ok=True)
         trades.to_csv("logs/backtest_trades.csv", index=False)
