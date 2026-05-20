@@ -36,10 +36,10 @@ class OrderManager:
 
     def __init__(self) -> None:
         self.mode = CONFIG["trading"]["mode"]
-        self.kalshi = KalshiClient()
         self._open_positions: dict[str, float] = {}
         self._order_ids: dict[str, str] = {}
         self._realized_pnl: float = 0.0
+        self.kalshi = KalshiClient() if self.mode == "live" else None
         self._restore_open_positions()
         logger.info(f"OrderManager initialized in {self.mode.upper()} mode with {len(self._open_positions)} restored positions")
 
@@ -100,6 +100,8 @@ class OrderManager:
     def account_balance(self) -> float:
         """Return current account balance in dollars."""
         if self.mode == "dry_run":
+            return self._dry_run_balance
+        if self.kalshi is None:
             return self._dry_run_balance
         resp = self.kalshi._get("/portfolio/balance")
         return resp["balance"] / 100
@@ -227,9 +229,12 @@ class OrderManager:
         Resolved positions are removed from open_positions automatically.
         """
         resolved = []
+        if self.mode == "dry_run":
+            return resolved
+
         for contract_id in list(self._open_positions.keys()):
             try:
-                market = self.kalshi.get_market(contract_id)
+                market = self.kalshi.get_market(contract_id)  # type: ignore[union-attr]
             except Exception as e:
                 logger.warning("Could not fetch market %s: %s", contract_id, e)
                 continue
