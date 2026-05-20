@@ -247,6 +247,7 @@ def _run_real_backtest(
         trade_log.append({
             "contract_id": contract_id,
             "timestamp": row.get("fetched_at", ""),
+            "market_category": row.get("market_category", None),
             "p_model": round(p_model, 4),
             "market_price": round(market_price, 4),
             "side": side,
@@ -268,6 +269,7 @@ def run_backtest(
     sentiment_path: str | Path | None = None,
     model=None,
     starting_balance: float = TRADING_CFG["starting_balance"],
+    verbose: bool = True,
 ) -> pd.DataFrame:
     """
     Simulate trading on historical resolved contracts.
@@ -277,6 +279,8 @@ def run_backtest(
         sentiment_path:   path to sentiment.json (optional)
         model:            fitted model with predict_proba(). If None, loads from disk.
         starting_balance: simulated starting bankroll in dollars
+        verbose:          print metrics summary to stdout (default True). Set False
+                          when calling from a notebook and plotting results yourself.
 
     Returns:
         DataFrame of simulated trades with columns:
@@ -300,7 +304,7 @@ def run_backtest(
             starting_balance=starting_balance,
         )
 
-    if not trades.empty:
+    if not trades.empty and verbose:
         print_metrics(trades, starting_balance)
 
     return trades
