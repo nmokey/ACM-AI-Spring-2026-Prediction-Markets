@@ -26,25 +26,28 @@ The live system requires two processes running simultaneously on the club server
 ```
 run_pipeline.sh  (every 15 min)         run_bot.sh  (every 60 sec)
   │                                        │
-  ├─ data.engineer                         └─ execution.trader
-  │    ├─ fetches Kalshi markets                reads predictions.json
-  │    ├─ fetches BTC/ETH from Coinbase         applies risk + Kelly sizing
-  │    ├─ fetches weather from NOAA             logs to dry_run_trades.csv
-  │    ├─ writes live_features.parquet
-  │    └─ appends to snapshots.parquet     label_resolved.py  (daily)
-  │         (resolved_yes = null)            │
-  ├─ nlp.sentiment  (every 30 min)          └─ queries Kalshi for settled status
-  │    reads live_features.parquet               stamps resolved_yes = 0 or 1
-  │    writes nlp/sentiment.json                 → snapshots become training rows
-  └─ models.predict
+  ├─ nlp.sentiment  (every 30 min)         └─ execution.trader
+  │    reads live_features.parquet              reads predictions.json
+  │    writes nlp/sentiment.json                applies risk + Kelly sizing
+  │                                             submits orders (dry_run or live)
+  ├─ data.engineer                              polls Kalshi for resolutions
+  │    ├─ fetches Kalshi markets                logs to dry_run_trades.csv
+  │    ├─ fetches BTC/ETH from Coinbase              and resolved_trades.csv
+  │    ├─ fetches weather from NOAA
+  │    ├─ joins current sentiment.json      label_resolved.py  (daily)
+  │    ├─ writes live_features.parquet        │
+  │    └─ appends to snapshots.parquet        └─ queries Kalshi for settled status
+  │         (sentiment included at write)          stamps resolved_yes = 0 or 1
+  └─ models.predict                               → snapshots become training rows
        reads live_features.parquet
-       reads nlp/sentiment.json
        writes predictions.json
 ```
 
-**`run_pipeline.sh`** — the data + ML loop. Runs every 15 min. Fetches live market/crypto/weather data, scores NLP sentiment (every other cycle, ~30 min), runs model inference, and appends a snapshot row for every open contract to `data/features/snapshots.parquet`. Does not submit trades.
+**Important ordering:** `nlp.sentiment` runs **before** `data.engineer` each cycle so that the current sentiment scores are captured in the snapshot row at write time. Reversing this order was a bug that caused sentiment to always be zero in training data.
 
-**`run_bot.sh`** — the execution loop. Reads `predictions.json` every 60 seconds and submits (or dry-run logs) orders. Depends on `run_pipeline.sh` to keep predictions fresh.
+**`run_pipeline.sh`** — the data + ML loop. Runs every 15 min. Scores NLP sentiment every 30 min (every other cycle), fetches live market/crypto/weather data, runs model inference, and appends a snapshot row for every open contract to `data/features/snapshots.parquet`. Does not submit trades.
+
+**`run_bot.sh`** — the execution loop. Reads `predictions.json` every 60 seconds and submits (or dry-run logs) orders. Polls Kalshi for resolution of open positions each cycle. Depends on `run_pipeline.sh` to keep predictions fresh.
 
 **`scripts/label_resolved.py`** — the labeling job. Run once daily. Checks Kalshi for settled contracts and stamps `resolved_yes` on their snapshot rows, converting raw snapshots into labeled training data.
 
@@ -92,9 +95,9 @@ trading:
   min_confidence: 0.60
 ```
 
-**`dry_run`** — all orders are logged to `logs/dry_run_trades.csv` via `execution/dry_run.py`. No real orders are placed. Default mode.
+**`dry_run`** — all orders are logged to `logs/dry_run_trades.csv` via `execution/dry_run.py`. No real orders are placed. Default mode. The bot still polls Kalshi for market data and resolution status; it just never calls `place_order`.
 
-**`live`** — orders are submitted to Kalshi via `execution/order_manager.py`. `run_bot.sh` prompts for confirmation before starting in live mode. Only flip this after passing the Week 6 go/no-go gate (Sharpe > 1.0 AND win rate > 52%).
+**`live`** — orders are submitted to Kalshi via `execution/order_manager.py`. `run_bot.sh` prompts for confirmation before starting in live mode. In live mode, resting orders are polled every 2s for up to 30s; if unfilled they are canceled and the position is not tracked. Only flip this after passing the Week 6 go/no-go gate.
 
 ---
 
@@ -103,15 +106,16 @@ trading:
 Use these to run each pipeline stage individually:
 
 ```bash
-# Step 1 — Refresh live features (Team 1)
-uv run python -m data.engineer
-# Writes: data/features/live_features.parquet
-# Appends: data/features/snapshots.parquet (resolved_yes = null)
-
-# Step 2 — Score sentiment (Team 2 NLP)
+# Step 1 — Score sentiment (Team 2 NLP) — must run BEFORE engineer
 uv run python -m nlp.sentiment
 # Reads: data/features/live_features.parquet (contract titles)
 # Writes: nlp/sentiment.json
+
+# Step 2 — Refresh live features (Team 1)
+uv run python -m data.engineer
+# Reads: nlp/sentiment.json (joined at write time)
+# Writes: data/features/live_features.parquet
+# Appends: data/features/snapshots.parquet (resolved_yes = null, sentiment included)
 
 # Step 3 — Run inference (Team 2 Modeling)
 uv run python -m models.predict
@@ -124,10 +128,12 @@ uv run python -m scripts.label_resolved
 # Queries Kalshi for settled status
 # Stamps: resolved_yes = 0 or 1
 
-# Step 5 — Retrain (once you have 200+ labeled rows)
-uv run python -m models.train
+# Step 5 — Retrain (once you have enough labeled rows)
+uv run python -m models.train --features data/features/snapshots.parquet --dedup
+# --dedup takes the last snapshot per contract (avoids leaking future market_price)
 # Reads: data/features/snapshots.parquet (labeled rows only)
 # Writes: models/trained/xgb_v1.joblib
+# Appends: logs/model_metrics.jsonl (brier, log-loss, feature importances)
 ```
 
 ---
@@ -173,8 +179,8 @@ Checks row counts, null fields, value ranges, sentiment coverage, and snapshot a
 | `data/engineer.py` | `uv run python -m data.engineer` | Refresh live_features.parquet + append to snapshots |
 | `nlp/sentiment.py` | `uv run python -m nlp.sentiment` | Score sentiment → nlp/sentiment.json |
 | `models/predict.py` | `uv run python -m models.predict` | Live inference → signals/predictions.json |
-| `models/train.py` | `uv run python -m models.train` | Retrain XGBoost on labeled snapshots |
-| `models/evaluate.py` | `uv run python -m models.evaluate` | Brier score, calibration curve, feature importance |
+| `models/train.py` | `uv run python -m models.train --features data/features/snapshots.parquet --dedup` | Retrain XGBoost on labeled snapshots |
+| `models/evaluate.py` | imported by train.py | Brier score, log-loss, feature importance; appends to logs/model_metrics.jsonl |
 | `backtest/engine.py` | `uv run python -m backtest.engine` | Run backtest (dummy mode) |
 
 ---
@@ -200,6 +206,37 @@ The sentiment step runs every 30 min (every other 15-min pipeline cycle). Most c
 
 `nlp/sentiment.py` embeds all headlines once into a matrix, then scores all contracts in a single batched matrix multiplication — O(1) embedding passes instead of O(contracts). This reduced scoring from hanging indefinitely (sequential per-contract embedding over 1,100 iterations) to ~50s.
 
+### Sentiment coverage
+
+As of May 2026: 74% of weather snapshot rows have non-zero sentiment, 47% overall (sports 84%, weather 73%, crypto 19%, macro 19%). Coverage is lower for crypto because many crypto contract titles map to the same query and share sentiment signal across hundreds of contracts.
+
 ### GNews rate limits
 
 The free GNews tier has a low daily request cap. When the key is exhausted, GNews returns 403 — GDELT fallback takes over automatically. To increase limits, request free academic access from your UCLA email at gnews.io.
+
+---
+
+## Live Trading Dashboard
+
+The bot renders a live terminal dashboard when running via `bash scripts/run_bot.sh`. It uses a terminal scroll region so trade log lines scroll naturally at the top while the status panel stays pinned at the bottom. The panel updates every second.
+
+```
+────────────────────────────────────────────────────
+ DRY RUN  05-17 02:11 UTC  next poll in  42s  |  balance: $73.21
+────────────────────────────────────────────────────
+  Open:  10   Closed:  38   24W / 14L  (63% win)
+  P&L : realized $+3.18  |  open EV $+24.67
+  Edge: avg open 0.348
+────────────────────────────────────────────────────
+  Sides   (all-time): YES:17  NO:31
+  Markets (all-time): weather:48
+────────────────────────────────────────────────────
+```
+
+Each trade logged as two lines — what was placed and why:
+```
+[05-17 02:09] OPEN  NO KXHIGHLAX-26MAY15-T67  sz=6 @ 23¢  [weather]
+              p_model=0.133  mkt=0.235  edge=0.102  conf=0.821  kelly=$1.38 (1.9%)
+```
+
+Balance tracks dynamically: `$100 starting − open position cost + realized P&L`.

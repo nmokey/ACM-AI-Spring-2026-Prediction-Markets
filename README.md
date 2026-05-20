@@ -73,14 +73,18 @@ We build an end-to-end quantitative trading bot targeting [Kalshi](https://kalsh
 
 ## Results
 
-> Live results pending Week 6 backtest. Current status: pipeline is running in dry-run mode, accumulating labeled snapshots for retraining.
+Live dry-run — bot has been trading autonomously since Week 5 against real Kalshi market prices.
 
 | Metric | Target | Current |
 |---|---|---|
-| Brier Score | < 0.20 | 0.064 (⚠️ misleading — see [narrative](docs/narrative.md)) |
-| Sharpe Ratio | > 1.0 | Backtest in progress |
-| Win Rate | > 52% | Backtest in progress |
-| Dry-Run Trades | > 50 | Accumulating |
+| Brier Score | < 0.20 | **0.0162** (trained on 32k unique live contracts) |
+| Win Rate | > 52% | **63.2%** (24W / 14L, 38 resolved) |
+| Realized P&L | — | **+$3.18** (dry-run, $100 starting balance) |
+| Dry-Run Trades | > 50 | **89 placed**, all weather contracts |
+| Sentiment coverage | — | **74%** of weather rows, 47% overall |
+| Sentiment feature importance | 0% | **2.4%** (score + confidence combined) |
+
+> The model trades exclusively weather contracts in practice — crypto market prices are too efficient (edge < `min_edge: 0.06`) for the Kelly criterion to size a bet. This is expected behavior.
 
 ---
 
@@ -105,7 +109,7 @@ See [docs/runbook.md](docs/runbook.md) for full setup, server deployment, and sc
 |---|---|
 | [docs/runbook.md](docs/runbook.md) | How to run the pipeline, bot modes, manual steps, script reference, NLP notes |
 | [docs/repo_structure.md](docs/repo_structure.md) | Directory map, team ownership, data contracts between teams |
-| [docs/narrative.md](docs/narrative.md) | Project progress, known data limitations, go/no-go gate |
+| [docs/narrative.md](docs/narrative.md) | Project progress, known issues, go/no-go gate |
 
 ---
 

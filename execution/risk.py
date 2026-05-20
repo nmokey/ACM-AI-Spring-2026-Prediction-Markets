@@ -52,7 +52,13 @@ def check_trade(
     """
     edge = abs(p_model - market_price)
 
-    # 1. Minimum edge
+    # 1. Reject near-certain contracts — market price outside [0.05, 0.95].
+    # Kelly sizing at extreme prices produces absurd contract counts (e.g. 999
+    # contracts at 1¢), and these markets are already efficiently priced.
+    if not (0.05 <= market_price <= 0.95):
+        return RiskCheckResult(False, f"Market price {market_price:.3f} too extreme (outside [0.05, 0.95])")
+
+    # 2. Minimum edge
     if edge < CONFIG["min_edge"]:
         return RiskCheckResult(False, f"Edge {edge:.3f} < min_edge {CONFIG['min_edge']}")
 

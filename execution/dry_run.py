@@ -35,9 +35,13 @@ _FIELDNAMES = [
 
 
 def log_dry_run_trade(record: TradeRecord) -> None:
-    """Append a TradeRecord to the dry-run CSV log."""
-    file_exists = DRY_RUN_LOG.exists()
-    with open(DRY_RUN_LOG, "a", newline="") as f:
+    if record.mode == "live":
+        log_path = Path(CONFIG["data"]["live_log_path"])
+    else:
+        log_path = DRY_RUN_LOG
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    file_exists = log_path.exists()
+    with open(log_path, "a", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=_FIELDNAMES)
         if not file_exists:
             writer.writeheader()

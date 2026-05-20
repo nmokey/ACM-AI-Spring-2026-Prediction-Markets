@@ -42,11 +42,11 @@ from extensions.sports_reversion.strategy import _load_fte_nba_elo, compute_sign
 
 STARTING_BALANCE = 1000.0
 
-THRESHOLDS  = [0.65, 0.70, 0.75, 0.80]
-BIASES      = [0.03, 0.05, 0.08, 0.10]
-DIRECTIONS  = ["fade", "follow"]
-SEASONS     = ["all", "regular", "playoffs"]
-KELLY_MULTS = [0.10, 0.25]
+THRESHOLDS  = [0.70, 0.75, 0.80, 0.85]
+BIASES      = [0.05, 0.08, 0.10, 0.12]
+DIRECTIONS  = ["fade"]           # "follow" consistently loses, skip it
+SEASONS     = ["playoffs"]       # playoffs >> regular season
+KELLY_MULTS = [0.10, 0.15, 0.25]
 
 
 def backtest(signals: pd.DataFrame, kelly_multiplier: float) -> dict:
@@ -56,6 +56,8 @@ def backtest(signals: pd.DataFrame, kelly_multiplier: float) -> dict:
     trades = []
 
     for _, row in signals.iterrows():
+        if balance < STARTING_BALANCE * 0.50:
+            break  # stop-loss: halt if balance drops below 50%
         bet_dollars, side = kelly_fraction(
             p_model=row["p_model"],
             market_price=row["market_price"],

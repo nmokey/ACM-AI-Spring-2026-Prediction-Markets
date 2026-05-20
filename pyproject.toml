@@ -24,6 +24,8 @@ dependencies = [
     "pytest>=8.0",
     "pytest-cov>=4.0",
     "cryptography>=47.0.0",
+    "ccxt>=4.5.54",
+    "scipy>=1.17.1",
 ]
 
 [build-system]
