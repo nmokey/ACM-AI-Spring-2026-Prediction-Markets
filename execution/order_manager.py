@@ -39,7 +39,7 @@ class OrderManager:
         self._open_positions: dict[str, float] = {}
         self._order_ids: dict[str, str] = {}
         self._realized_pnl: float = 0.0
-        self.kalshi = KalshiClient() if self.mode == "live" else None
+        self.kalshi = KalshiClient()  # used for resolution checks in both modes; orders are gated by self.mode
         self._restore_open_positions()
         logger.info(f"OrderManager initialized in {self.mode.upper()} mode with {len(self._open_positions)} restored positions")
 
@@ -229,8 +229,6 @@ class OrderManager:
         Resolved positions are removed from open_positions automatically.
         """
         resolved = []
-        if self.mode == "dry_run":
-            return resolved
 
         for contract_id in list(self._open_positions.keys()):
             try:

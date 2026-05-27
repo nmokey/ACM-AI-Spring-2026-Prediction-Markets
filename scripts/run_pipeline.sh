@@ -7,12 +7,12 @@
 # Usage: bash scripts/run_pipeline.sh
 # Run in background: nohup bash scripts/run_pipeline.sh > logs/pipeline.log 2>&1 &
 
-set -euo pipefail
+set -uo pipefail
 
 export PATH="$HOME/.local/bin:$PATH"
 
-FEATURE_INTERVAL=900   # 15 min in seconds
-SENTIMENT_INTERVAL=1800 # 30 min in seconds
+FEATURE_INTERVAL=120   # 2 min — keeps p_model fresh for fast-moving crypto contracts
+SENTIMENT_INTERVAL=300 # 5 min
 
 echo "[pipeline] Starting data + NLP pipeline loop"
 echo "[pipeline] Feature refresh: every ${FEATURE_INTERVAL}s"

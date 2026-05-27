@@ -24,6 +24,7 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
+from execution.dry_run import PRETTY_LOG, log_pretty_entry, log_pretty_resolution
 from execution.kelly import kelly_fraction
 from execution.order_manager import OrderManager
 from execution.risk import check_trade
@@ -41,11 +42,16 @@ DRY_RUN_LOG = Path(DATA_CFG["dry_run_log_path"])
 LIVE_LOG = Path(DATA_CFG["live_log_path"])
 RESOLVED_LOG = Path(DATA_CFG["resolved_log_path"])
 RESOLVED_LOG.parent.mkdir(parents=True, exist_ok=True)
+POSITIONS_LOG = Path("logs/positions.log")
 
 _RESOLVED_FIELDS = [
     "timestamp", "contract_id", "side", "size",
     "entry_price_cents", "result", "won", "pnl_dollars", "mode",
 ]
+
+# Refuse to trade if predictions.json is older than this many seconds.
+# Pipeline refreshes every 120s; 5 min means at least 2 missed cycles.
+_STALE_PREDICTIONS_SEC = 300
 
 # Number of lines the status panel occupies at the bottom.
 # Must match the number of lines _build_dashboard() produces.
@@ -199,6 +205,7 @@ _all_trades: list[dict] = []       # every trade ever placed this session
 _realized: list[float] = []
 _wins = 0
 _losses = 0
+_trade_num = 0                     # all-time trade counter for pretty log
 
 
 def _ticker_category(contract_id: str) -> str:
@@ -262,6 +269,7 @@ def _sync_closed_positions(resolution_events: list[dict], mode: str) -> None:
         else:
             _losses += 1
             label = "LOSS"
+        log_pretty_resolution(cid, ev["result"], ev["won"], pnl)
         cat = _ticker_category(cid)
         _print_log(
             f"[{_ts()}] {label} {ev['side']:>3} {cid}  "
@@ -278,6 +286,85 @@ def _sync_closed_positions(resolution_events: list[dict], mode: str) -> None:
 
 # ── Trading logic ─────────────────────────────────────────────────────────────
 
+def _write_positions_snapshot() -> None:
+    """Rewrite logs/positions.log with current prices for every open position."""
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    if not _open_book:
+        POSITIONS_LOG.write_text(f"No open positions — {now_str}\n")
+        return
+
+    # Pull current prices from the parquet (already refreshed every 2 min by engineer)
+    prices: dict[str, float] = {}
+    dtrs: dict[str, float] = {}
+    try:
+        df = pd.read_parquet(Path(DATA_CFG["features_path"]))
+        prices = {r.contract_id: r.market_price for r in df.itertuples() if r.market_price == r.market_price}
+        dtrs   = {r.contract_id: r.days_to_resolution for r in df.itertuples() if r.days_to_resolution == r.days_to_resolution}
+    except Exception:
+        pass
+
+    sep = "─" * 78
+    lines = [f"Open positions — {now_str}\n", sep + "\n\n"]
+    total_upnl = 0.0
+
+    for cid, entry in _open_book.items():
+        side       = entry["side"]
+        size       = entry["size"]
+        entry_cents = entry["limit_price"]   # cents paid per contract (adjusted for side)
+
+        current_yes = prices.get(cid)
+        dtr         = dtrs.get(cid)
+
+        if current_yes is not None:
+            # entry_cents is already the price for the chosen side
+            current_side = current_yes if side == "YES" else (1.0 - current_yes)
+            current_cents = int(round(current_side * 100))
+            pnl_per   = current_side - entry_cents / 100      # dollars per contract
+            upnl      = pnl_per * size
+            total_upnl += upnl
+            pct       = (pnl_per / (entry_cents / 100) * 100) if entry_cents > 0 else 0
+            price_str = f"now {current_cents}¢  ({pct:+.0f}%)  uPnL {upnl:+.2f}"
+        else:
+            price_str = "price unavailable"
+
+        dtr_str = f"  {dtr:.1f}d left" if dtr is not None else ""
+        lines.append(
+            f"  {side:<3}  {cid:<42}  entry {entry_cents}¢ × {size}   {price_str}{dtr_str}\n"
+        )
+
+    lines.append(
+        f"\n{sep}\n"
+        f"  Unrealized: {total_upnl:+.2f}   "
+        f"Realized: {sum(_realized):+.2f}   "
+        f"Open: {len(_open_book)}   Closed: {_wins + _losses} ({_wins}W/{_losses}L)\n"
+    )
+    POSITIONS_LOG.write_text("".join(lines))
+
+
+def _fetch_live_price(order_manager: OrderManager, contract_id: str) -> float | None:
+    """Fetch the current YES mid-price from Kalshi for a single contract."""
+    try:
+        m = order_manager.kalshi.get_market(contract_id)
+        ask = m.get("yes_ask_dollars")
+        bid = m.get("yes_bid_dollars")
+        if ask is not None and bid is not None:
+            ask_f, bid_f = float(ask), float(bid)
+            mid = (ask_f + bid_f) / 2
+            if 0 < mid < 1:
+                return mid
+            if 0 < ask_f < 1:
+                return ask_f
+        last = m.get("last_price_dollars")
+        if last is not None:
+            lf = float(last)
+            if 0 < lf < 1:
+                return lf
+        return None
+    except Exception:
+        return None
+
+
 def run_once(order_manager: OrderManager) -> int:
     predictions_path = Path(DATA_CFG["predictions_path"])
     if not predictions_path.exists():
@@ -287,23 +374,62 @@ def run_once(order_manager: OrderManager) -> int:
     with open(predictions_path) as f:
         predictions = json.load(f)
 
+    # Refuse to trade on stale predictions — pipeline may have died
+    if predictions:
+        try:
+            freshest = max(
+                datetime.fromisoformat(v["timestamp"].replace("Z", "+00:00"))
+                for v in predictions.values()
+                if "timestamp" in v
+            )
+            age_sec = (datetime.now(timezone.utc) - freshest).total_seconds()
+            if age_sec > _STALE_PREDICTIONS_SEC:
+                _print_log(
+                    f"[{_ts()}] WARN  predictions.json is {age_sec:.0f}s old "
+                    f"(>{_STALE_PREDICTIONS_SEC}s) — skipping poll, pipeline may be down"
+                )
+                return 0
+        except (ValueError, KeyError):
+            pass
+
     features_path = Path(DATA_CFG["features_path"])
     if not features_path.exists():
         _print_log(f"[{_ts()}] WARN  live_features.parquet not found — skipping")
         return 0
 
     df = pd.read_parquet(features_path)
-    prices = dict(zip(df["contract_id"], df["market_price"]))
+    stale_prices = dict(zip(df["contract_id"], df["market_price"]))
+    days_left    = dict(zip(df["contract_id"], df["days_to_resolution"]))
+    global _trade_num
     balance = order_manager.account_balance
     n_placed = 0
 
     for contract_id, entry in predictions.items():
-        market_price = prices.get(contract_id)
-        if market_price is None or pd.isna(market_price):
+        # Skip contracts expiring today — prices are near-certain and stale data is dangerous
+        dtr = days_left.get(contract_id)
+        if dtr is not None and not pd.isna(dtr) and dtr < 1.0:
+            continue
+
+        stale_price = stale_prices.get(contract_id)
+        if stale_price is None or pd.isna(stale_price):
             continue
 
         p_model    = entry["p_model"]
         confidence = entry["confidence"]
+
+        # Use stale price as initial edge screen to avoid unnecessary API calls
+        if abs(p_model - stale_price) < TRADING_CFG["min_edge"]:
+            continue
+
+        # Fetch live price from Kalshi right before committing to a trade
+        live_price = _fetch_live_price(order_manager, contract_id)
+        market_price = live_price if live_price is not None else stale_price
+
+        if live_price is not None and live_price != stale_price:
+            _print_log(
+                f"[{_ts()}] PRICE {contract_id}  "
+                f"stale={stale_price:.3f}  live={live_price:.3f}"
+            )
 
         risk = check_trade(
             p_model=p_model,
@@ -334,6 +460,8 @@ def run_once(order_manager: OrderManager) -> int:
         )
         if record is not None:
             n_placed += 1
+            _trade_num += 1
+            log_pretty_entry(record, _trade_num)
             cat  = _ticker_category(contract_id)
             edge = record.edge
             kelly_pct = (bet_dollars / balance * 100) if balance > 0 else 0
@@ -378,8 +506,60 @@ def _ts() -> str:
     return datetime.now(timezone.utc).strftime("%m-%d %H:%M:%S")
 
 
+def _backfill_pretty_log(trade_log: Path) -> None:
+    """Write logs/trades.log from existing CSV history on first startup."""
+    resolutions: dict[str, dict] = {}
+    if RESOLVED_LOG.exists():
+        with open(RESOLVED_LOG) as f:
+            for row in csv.DictReader(f):
+                cid = row.get("contract_id", "")
+                if cid:
+                    resolutions[cid] = row
+
+    num = 0
+    with open(PRETTY_LOG, "w") as out, open(trade_log) as tf:
+        for row in csv.DictReader(tf):
+            cid = row.get("contract_id", "")
+            if not cid:
+                continue
+            try:
+                num += 1
+                limit_price = int(row["limit_price"])
+                size        = int(row["size"])
+                p_model     = float(row["p_model"])
+                market_price = float(row["market_price"])
+                edge        = float(row["edge"])
+                side        = row["side"]
+                mode        = row.get("mode", "dry_run")
+                ts          = row.get("timestamp", "")[:16].replace("T", " ")
+                profit_per  = 100 - limit_price
+                mode_tag    = "DRY RUN" if mode == "dry_run" else "LIVE"
+                conf        = abs(p_model - 0.5) * 2
+                out.write(
+                    f"  #{num:<4} {ts}  {side:<3}  {cid:<42}"
+                    f"paid {limit_price}¢ × {size}  (+{profit_per}¢ profit/ea)\n"
+                    f"         p_model={p_model:.3f}  mkt={market_price:.3f}  "
+                    f"edge={edge:.3f}  conf={conf:.3f}  [{mode_tag}]\n"
+                )
+                if cid in resolutions:
+                    res   = resolutions[cid]
+                    won   = res.get("won", "").lower() == "true"
+                    pnl   = float(res.get("pnl_dollars", 0))
+                    result = res.get("result", "?")
+                    label = "WIN " if won else "LOSS"
+                    out.write(
+                        f"         → [{label}]  {cid}  result={result.upper()}  "
+                        f"P&L {pnl:+.2f}\n\n"
+                    )
+                else:
+                    out.write("\n")
+            except (KeyError, ValueError):
+                continue
+
+
 def _restore_open_book(order_manager: OrderManager) -> None:
     """On startup, rebuild _open_book and _all_trades from the CSV logs."""
+    global _wins, _losses, _trade_num
     trade_log = LIVE_LOG if order_manager.mode == "live" else DRY_RUN_LOG
     if not trade_log.exists():
         return
@@ -417,8 +597,15 @@ def _restore_open_book(order_manager: OrderManager) -> None:
             if cid not in resolved:
                 _open_book[cid] = entry
 
+    # Initialize trade counter from CSV row count so #N is always all-time
+    with open(trade_log) as f:
+        _trade_num = sum(1 for _ in csv.DictReader(f))
+
+    # Backfill pretty log from CSV if it doesn't exist yet
+    if not PRETTY_LOG.exists():
+        _backfill_pretty_log(trade_log)
+
     # Also restore _wins/_losses from resolved log
-    global _wins, _losses
     if RESOLVED_LOG.exists():
         with open(RESOLVED_LOG) as f:
             for row in csv.DictReader(f):
@@ -457,6 +644,7 @@ def main() -> None:
                 run_once(order_manager)
             except Exception as e:
                 _print_log(f"[{_ts()}] ERROR {e}")
+            _write_positions_snapshot()
             next_poll = time.time() + poll
 
         stats = _compute_stats(order_manager)

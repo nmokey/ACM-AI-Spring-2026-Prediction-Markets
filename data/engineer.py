@@ -12,6 +12,7 @@ to consume in models/predict.py.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -140,15 +141,15 @@ def _fetch_markets_by_series(kalshi: KalshiClient) -> list[dict]:
         for series in series_list:
             try:
                 page = kalshi.get_markets(status="open", series_ticker=series)
+                for m in page:
+                    ticker = m.get("ticker", "")
+                    if ticker and ticker not in seen:
+                        seen.add(ticker)
+                        m["_category_tag"] = category_tag
+                        all_markets.append(m)
             except Exception as e:
                 logger.warning("Failed to fetch series %s: %s", series, e)
-                continue
-            for m in page:
-                ticker = m.get("ticker", "")
-                if ticker and ticker not in seen:
-                    seen.add(ticker)
-                    m["_category_tag"] = category_tag
-                    all_markets.append(m)
+            time.sleep(0.35)  # pace between series requests — Kalshi rate-limits bursts
 
     logger.info("Fetched %d unique markets across all series", len(all_markets))
     return all_markets
