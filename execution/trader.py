@@ -89,7 +89,7 @@ def _log_resolved(events: list[dict], mode: str) -> None:
 
 def _query_term_size() -> tuple[int, int]:
     """Query the real tty size, trying each fd and /dev/tty as fallbacks."""
-    import os
+    import os, subprocess
     for fd in (sys.stdout.fileno(), sys.stderr.fileno(), sys.stdin.fileno()):
         try:
             s = os.get_terminal_size(fd)
@@ -101,6 +101,16 @@ def _query_term_size() -> tuple[int, int]:
             s = os.get_terminal_size(tty.fileno())
             return s.columns, s.lines
     except OSError:
+        pass
+    # In a tmux pane with no tty, query the pane dimensions directly.
+    try:
+        out = subprocess.check_output(
+            ["tmux", "display-message", "-p", "#{pane_width} #{pane_height}"],
+            stderr=subprocess.DEVNULL, text=True,
+        ).strip()
+        w, h = out.split()
+        return int(w), int(h)
+    except Exception:
         pass
     s = shutil.get_terminal_size((120, 40))
     return s.columns, s.lines
